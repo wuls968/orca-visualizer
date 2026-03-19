@@ -3,4 +3,5 @@ kaleido<1
 numpy
 pandas
 plotly
+psutil
 streamlit

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import os
 from pathlib import Path
+import platform
 import re
 import shutil
 import subprocess
@@ -68,45 +69,40 @@ def discover_gbw_sidecars(path: str | Path) -> dict[str, Path]:
 def resolve_orca_plot(path_hint: str = "") -> Path | None:
     hint = path_hint.strip()
     candidates: list[Path] = []
+    executable_names = _orca_plot_names()
 
     if hint:
         raw_path = Path(hint).expanduser()
         if raw_path.is_file():
             candidates.append(raw_path)
-            candidates.append(raw_path.parent / "orca_plot")
+            candidates.extend(raw_path.parent / name for name in executable_names)
         elif raw_path.is_dir():
-            candidates.append(raw_path / "orca_plot")
+            candidates.extend(raw_path / name for name in executable_names)
 
-    which_result = shutil.which("orca_plot")
-    if which_result:
-        candidates.append(Path(which_result))
+    for executable_name in executable_names:
+        which_result = shutil.which(executable_name)
+        if which_result:
+            candidates.append(Path(which_result))
 
     env_orca_home = os.environ.get("ORCA_HOME", "").strip()
     if env_orca_home:
-        candidates.append(Path(env_orca_home) / "orca_plot")
+        candidates.extend(Path(env_orca_home) / name for name in executable_names)
 
     login_env = _load_login_shell_orca_env()
     login_orca_home = login_env.get("ORCA_HOME", "").strip()
     if login_orca_home:
-        candidates.append(Path(login_orca_home) / "orca_plot")
+        candidates.extend(Path(login_orca_home) / name for name in executable_names)
 
-    for path_entry in login_env.get("PATH", "").split(":"):
+    path_separator = ";" if os.name == "nt" else ":"
+    for path_entry in login_env.get("PATH", "").split(path_separator):
         path_entry = path_entry.strip()
         if path_entry:
-            candidates.append(Path(path_entry) / "orca_plot")
+            candidates.extend(Path(path_entry) / name for name in executable_names)
 
-    common_dirs = [
-        Path.home() / "Library",
-        Path.home() / "Applications",
-        Path("/Applications"),
-        Path("/opt"),
-        Path("/usr/local"),
-    ]
-    for base_dir in common_dirs:
+    for base_dir in _common_orca_directories():
         if not base_dir.exists():
             continue
-        for pattern in ["orca*/orca_plot", "orca_*/orca_plot", "*/orca_plot"]:
-            candidates.extend(base_dir.glob(pattern))
+        candidates.extend(_scan_orca_plot_candidates(base_dir, executable_names))
 
     for candidate in candidates:
         if candidate.exists() and candidate.is_file():
@@ -115,12 +111,12 @@ def resolve_orca_plot(path_hint: str = "") -> Path | None:
 
 
 def _load_login_shell_orca_env() -> dict[str, str]:
-    command = (
-        "zsh -lic 'printf \"ORCA_HOME=%s\\nPATH=%s\\n\" \"$ORCA_HOME\" \"$PATH\"'"
-    )
+    if os.name == "nt":
+        return {}
+
+    shell = os.environ.get("SHELL", "").strip() or "/bin/bash"
     completed = subprocess.run(
-        command,
-        shell=True,
+        [shell, "-lc", 'printf "ORCA_HOME=%s\\nPATH=%s\\n" "$ORCA_HOME" "$PATH"'],
         capture_output=True,
         text=True,
         check=False,
@@ -135,6 +131,48 @@ def _load_login_shell_orca_env() -> dict[str, str]:
         key, value = line.split("=", 1)
         env_data[key.strip()] = value.strip()
     return env_data
+
+
+def _orca_plot_names() -> list[str]:
+    if platform.system() == "Windows":
+        return ["orca_plot.exe", "orca_plot.bat", "orca_plot"]
+    return ["orca_plot"]
+
+
+def _common_orca_directories() -> list[Path]:
+    if platform.system() == "Windows":
+        roots = [
+            os.environ.get("ProgramFiles", ""),
+            os.environ.get("ProgramFiles(x86)", ""),
+            os.environ.get("LOCALAPPDATA", ""),
+            str(Path.home() / "AppData" / "Local"),
+        ]
+        return [Path(root) for root in roots if root]
+    return [
+        Path.home() / "orca",
+        Path.home() / "opt",
+        Path("/opt"),
+        Path("/usr/local"),
+        Path("/usr/local/bin"),
+    ]
+
+
+def _scan_orca_plot_candidates(base_dir: Path, executable_names: list[str]) -> list[Path]:
+    candidates: list[Path] = []
+    for executable_name in executable_names:
+        direct_candidate = base_dir / executable_name
+        if direct_candidate.exists():
+            candidates.append(direct_candidate)
+
+    patterns = ["orca*", "ORCA*", "orca_*", "*orca*"]
+    for pattern in patterns:
+        for path in base_dir.glob(pattern):
+            if not path.is_dir():
+                continue
+            for executable_name in executable_names:
+                candidates.append(path / executable_name)
+                candidates.append(path / "bin" / executable_name)
+    return candidates
 
 
 def build_orca_plot_input(

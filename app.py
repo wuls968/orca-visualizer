@@ -27,6 +27,7 @@ from orca_viz.gbw import (
 )
 from orca_viz.i18n import set_language, tr
 from orca_viz.parser import OrcaParseResult, summarize_results
+from orca_viz.process_monitor import process_dataframe, snapshot_processes
 from orca_viz.visualization import (
     STATIC_IMAGE_EXPORT_AVAILABLE,
     build_vibration_mode_html,
@@ -71,6 +72,7 @@ def main() -> None:
         mode_options = {
             tr("单文件分析"): "single",
             tr("批量比较"): "batch",
+            tr("后台监控"): "monitor",
         }
         mode = st.radio(tr("分析模式"), list(mode_options), index=0)
         st.divider()
@@ -95,10 +97,13 @@ def main() -> None:
         )
         st.checkbox(tr("显示原子标签"), value=False, key="global-structure-labels")
 
-    if mode_options[mode] == "single":
+    selected_mode = mode_options[mode]
+    if selected_mode == "single":
         _render_single_mode()
-    else:
+    elif selected_mode == "batch":
         _render_batch_mode()
+    else:
+        _render_process_monitor()
 
 
 def _render_single_mode() -> None:
@@ -194,6 +199,131 @@ def _render_batch_mode() -> None:
         )
         st.dataframe(cube_summary, hide_index=True, use_container_width=True)
         _download_dataframe(tr("下载 cube 汇总 CSV"), cube_summary, "cube_batch_summary.csv")
+
+
+def _render_process_monitor() -> None:
+    _render_page_note(
+        tr("后台监控说明"),
+        [
+            tr("扫描当前用户的后台进程，重点标记 ORCA、Python/Streamlit 和长时间高占用任务。"),
+            tr("不会主动结束任何进程；默认只做检测与提示，避免误杀正常任务。"),
+            tr("如果发现旧的 Streamlit、ORCA 或未知高占用进程长期驻留，再决定是否手动结束。"),
+        ],
+    )
+    with st.sidebar:
+        st.subheader(tr("监控设置"))
+        hide_self_related = st.checkbox(
+            tr("隐藏本软件相关进程"),
+            value=True,
+            key="process-monitor-hide-self",
+        )
+        hide_system_services = st.checkbox(
+            tr("隐藏系统服务"),
+            value=True,
+            key="process-monitor-hide-system",
+        )
+        only_suspicious = st.checkbox(
+            tr("仅显示中高风险进程"),
+            value=True,
+            key="process-monitor-only-suspicious",
+        )
+        st.button(tr("刷新后台检测"), key="process-monitor-refresh")
+
+    try:
+        snapshot = snapshot_processes()
+    except Exception as exc:
+        st.error(str(exc))
+        return
+    summary = snapshot["summary"]
+    st.caption(f"{tr('检测时间')}: {snapshot['captured_at']}")
+
+    summary_cols = st.columns(6)
+    summary_cols[0].metric(tr("总进程数"), summary["total_processes"])
+    summary_cols[1].metric(tr("可疑进程数"), summary["suspicious_processes"])
+    summary_cols[2].metric(tr("ORCA 相关数"), summary["orca_related_processes"])
+    summary_cols[3].metric(tr("驻留进程数"), summary["resident_processes"])
+    summary_cols[4].metric(tr("可疑 CPU 合计 (%)"), f"{summary['suspicious_cpu_percent']:.1f}")
+    summary_cols[5].metric(tr("最高内存占用 (%)"), f"{summary['max_memory_percent']:.1f}")
+
+    suspicious_df = _localize_process_dataframe(
+        process_dataframe(
+            snapshot["records"],
+            include_command=True,
+            hide_self_related=hide_self_related,
+            hide_system_services=hide_system_services,
+            only_suspicious=True,
+        )
+    )
+    if not suspicious_df.empty:
+        st.warning(tr("检测到可能长期驻留或高占用的后台进程，请检查是否需要保留。"))
+        st.subheader(tr("可疑进程"))
+        st.dataframe(suspicious_df, hide_index=True, use_container_width=True)
+    else:
+        st.success(tr("当前没有检测到明显可疑的后台驻留进程。"))
+
+    current_view_df = _localize_process_dataframe(
+        process_dataframe(
+            snapshot["records"],
+            include_command=True,
+            hide_self_related=hide_self_related,
+            hide_system_services=hide_system_services,
+            only_suspicious=only_suspicious,
+        )
+    )
+    if not current_view_df.empty:
+        _download_dataframe(
+            tr("下载进程快照 CSV"),
+            current_view_df,
+            "background_process_snapshot.csv",
+        )
+
+    left, right = st.columns(2)
+    with left:
+        st.subheader(tr("CPU 排名前 10"))
+        st.dataframe(
+            _localize_process_dataframe(
+                process_dataframe(
+                    snapshot["top_cpu"],
+                    include_command=False,
+                    hide_self_related=hide_self_related,
+                    hide_system_services=hide_system_services,
+                    only_suspicious=False,
+                )
+            ),
+            hide_index=True,
+            use_container_width=True,
+        )
+    with right:
+        st.subheader(tr("内存排名前 10"))
+        st.dataframe(
+            _localize_process_dataframe(
+                process_dataframe(
+                    snapshot["top_memory"],
+                    include_command=False,
+                    hide_self_related=hide_self_related,
+                    hide_system_services=hide_system_services,
+                    only_suspicious=False,
+                )
+            ),
+            hide_index=True,
+            use_container_width=True,
+        )
+
+    with st.expander(tr("进程类别说明"), expanded=False):
+        st.markdown(
+            "\n".join(
+                [
+                    f"- {tr('orca: ORCA 或 MPI 相关计算任务')}",
+                    f"- {tr('python: Python、Streamlit、Jupyter 等脚本型任务')}",
+                    f"- {tr('system: 当前用户空间下的系统服务或 launch agent')}",
+                    f"- {tr('other: 其他普通用户进程')}",
+                ]
+            )
+        )
+
+    if not current_view_df.empty:
+        with st.expander(tr("后台监控"), expanded=False):
+            st.dataframe(current_view_df, hide_index=True, use_container_width=True)
 
 
 def _render_orca_analysis(result: OrcaParseResult) -> None:
@@ -1190,6 +1320,37 @@ def _download_dataframe(label: str, dataframe: pd.DataFrame, file_name: str) -> 
     st.download_button(label=label, data=csv_buffer.getvalue(), file_name=file_name)
 
 
+def _localize_process_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
+    if dataframe.empty:
+        return dataframe
+
+    localized = dataframe.copy()
+    if "category" in localized:
+        localized["category"] = localized["category"].map(_process_category_label)
+    if "risk" in localized:
+        localized["risk"] = localized["risk"].map(_process_risk_label)
+    if "resident" in localized:
+        localized["resident"] = localized["resident"].map(lambda value: tr("是") if value else tr("否"))
+    if "reasons" in localized:
+        localized["reasons"] = localized["reasons"].map(_process_reason_text)
+
+    return localized.rename(
+        columns={
+            "pid": "PID",
+            "ppid": "PPID",
+            "process": tr("进程"),
+            "category": tr("类别"),
+            "risk": tr("风险等级"),
+            "cpu_percent": tr("CPU 占用 (%)"),
+            "memory_percent": tr("内存占用 (%)"),
+            "elapsed": tr("驻留时长"),
+            "resident": tr("后台驻留"),
+            "reasons": tr("原因"),
+            "command": tr("命令"),
+        }
+    )
+
+
 def _render_figure_export_controls(
     figure: Any,
     file_stem: str,
@@ -1336,6 +1497,32 @@ def _ts_status_label(status: str | None) -> str:
         "not_ts": tr("非 TS"),
     }
     return mapping.get(status, "-")
+
+
+def _process_category_label(category: str) -> str:
+    mapping = {
+        "orca": "ORCA",
+        "python": tr("Python / Streamlit"),
+        "system": tr("系统服务"),
+        "other": tr("其他"),
+    }
+    return mapping.get(category, category)
+
+
+def _process_risk_label(risk: str) -> str:
+    mapping = {
+        "high": tr("高风险"),
+        "medium": tr("中风险"),
+        "low": tr("低风险"),
+    }
+    return mapping.get(risk, risk)
+
+
+def _process_reason_text(raw_value: str) -> str:
+    if not raw_value:
+        return ""
+    tokens = [token.strip() for token in raw_value.split(";") if token.strip()]
+    return "; ".join(tr(token) for token in tokens)
 
 
 if __name__ == "__main__":
