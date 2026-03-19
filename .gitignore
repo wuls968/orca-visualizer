@@ -17,6 +17,7 @@ build/
 *.plt
 *.densities
 *.densitiesinfo
+!sample_data/*.cube
 generated_cubes/
 exports/
 tmp/
