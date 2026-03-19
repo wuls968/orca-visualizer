@@ -1,0 +1,97 @@
+                         *************************
+                         * O   R   C   A         *
+                         *************************
+
+Program Version 5.0.4
+
+! B3LYP DEF2-SVP OPT FREQ TDDFT IRC NEB
+
+Total Charge           Charge ............   0
+Multiplicity           Mult   ............   1
+
+GEOMETRY OPTIMIZATION CYCLE   1
+FINAL SINGLE POINT ENERGY      -76.12345678
+
+GEOMETRY OPTIMIZATION CYCLE   2
+FINAL SINGLE POINT ENERGY      -76.34567890
+
+CARTESIAN COORDINATES (ANGSTROEM)
+---------------------------------
+C      0.000000    0.000000    0.000000
+O      1.200000    0.000000    0.000000
+H     -0.500000    0.900000    0.000000
+
+VIBRATIONAL FREQUENCIES
+-----------------------
+    1:      -123.45 cm**-1
+    2:       345.67 cm**-1
+    3:      1567.89 cm**-1
+
+NORMAL MODES
+------------
+
+These modes are the Cartesian displacements weighted by the diagonal matrix
+M(i,i)=1/sqrt(m[i]) where m[i] is the mass of the displaced atom
+Thus, these vectors are normalized but *not* orthogonal
+
+                  0          1          2
+      0      -0.100000   0.010000   0.020000
+      1       0.000000   0.030000   0.010000
+      2       0.050000   0.020000   0.000000
+      3       0.080000  -0.040000   0.020000
+      4      -0.020000   0.010000  -0.030000
+      5       0.010000   0.000000   0.040000
+      6      -0.030000   0.020000   0.010000
+      7       0.040000   0.010000  -0.020000
+      8       0.060000  -0.010000   0.030000
+
+ABSORPTION SPECTRUM VIA TRANSITION ELECTRIC DIPOLE MOMENTS
+----------------------------------------------------------
+ 1   24320.7   411.2   0.0100
+ 2   30150.2   331.7   0.1200
+ 3   38500.0   259.7   0.0450
+
+IRC PATH SUMMARY
+----------------
+ Step   Coord.     Energy
+   0    -0.50   -76.200000
+   1     0.00   -76.250000
+   2     0.50   -76.210000
+
+FINAL NEB ENERGIES
+------------------
+ Image   Energy
+   0   -76.300000
+   1   -76.250000
+   2   -76.180000
+   3   -76.240000
+
+Following TS mode number                ...     0
+TS-active-atoms for coordinate setup... 1 2 3
+TS mode is mode number   0 with eigenvalue  -0.01000000 and components:
+
+MULLIKEN ATOMIC CHARGES
+-----------------------
+   0 C :   -0.1234
+   1 O :   -0.4567
+   2 H :    0.5801
+Sum of atomic charges         0.0000
+
+LOEWDIN ATOMIC CHARGES
+----------------------
+   0 C :   -0.1111
+   1 O :   -0.4000
+   2 H :    0.5111
+Sum of atomic charges         0.0000
+
+THERMOCHEMISTRY AT 298.15K
+Zero point energy                ...      0.12345678 Eh      77.47 kcal/mol
+Total thermal energy             ...    -76.10000000 Eh
+Total Enthalpy                   ...    -76.09900000 Eh
+Final entropy term               ...      0.01000000 Eh       6.28 kcal/mol
+Total entropy correction         ...     -0.01000000 Eh      -6.28 kcal/mol
+Final Gibbs free energy         ...    -76.10900000 Eh
+G-E(el)                          ...      0.23667890 Eh     148.51 kcal/mol
+
+TOTAL RUN TIME: 0 days 0 hours 1 minutes 2 seconds
+ORCA TERMINATED NORMALLY
