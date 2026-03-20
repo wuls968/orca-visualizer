@@ -21,6 +21,9 @@ CHARGE_LINE_RE = re.compile(
 ABSORPTION_STATE_RE = re.compile(
     r"^\s*(\d+)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)"
 )
+ABSORPTION_TRANSITION_RE = re.compile(
+    r"^\s*\S+\s*->\s*\S+\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)"
+)
 
 
 @dataclass
@@ -36,6 +39,7 @@ class OrcaParseResult:
     excited_states: pd.DataFrame = field(default_factory=pd.DataFrame)
     irc_points: pd.DataFrame = field(default_factory=pd.DataFrame)
     neb_points: pd.DataFrame = field(default_factory=pd.DataFrame)
+    scan_points: pd.DataFrame = field(default_factory=pd.DataFrame)
     thermochemistry: dict[str, float] = field(default_factory=dict)
     transition_state_info: dict[str, Any] = field(default_factory=dict)
     atoms: Atoms | None = None
@@ -91,6 +95,7 @@ def parse_orca_content(raw_text: str, source_name: str = "uploaded_file") -> Orc
     result.excited_states = _extract_excited_states(lines)
     result.irc_points = _extract_irc_points(lines)
     result.neb_points = _extract_neb_points(lines)
+    result.scan_points = _extract_scan_points(lines)
     result.thermochemistry = _extract_thermochemistry(raw_text)
     result.transition_state_info = _extract_transition_state_info(raw_text, result)
     result.metadata = _extract_metadata(raw_text, lines, result)
@@ -107,6 +112,8 @@ def parse_orca_content(raw_text: str, source_name: str = "uploaded_file") -> Orc
         result.warnings.append(tr("检测到 IRC 相关文本，但未找到可用路径表。"))
     if result.neb_points.empty and "NEB" in input_keywords:
         result.warnings.append(tr("检测到 NEB 相关文本，但未找到可用路径表。"))
+    if result.scan_points.empty and "SCAN" in input_keywords:
+        result.warnings.append(tr("检测到 Scan 关键词，但未找到可用扫描路径表。"))
 
     return result
 
@@ -128,6 +135,7 @@ def summarize_results(results: list[OrcaParseResult]) -> pd.DataFrame:
                 "excited_states": len(result.excited_states),
                 "irc_points": len(result.irc_points),
                 "neb_points": len(result.neb_points),
+                "scan_points": len(result.scan_points),
                 "charge": result.metadata.get("charge"),
                 "multiplicity": result.metadata.get("multiplicity"),
                 "termination": result.metadata.get("termination"),
@@ -268,19 +276,28 @@ def _extract_excited_states(lines: list[str]) -> pd.DataFrame:
         if not stripped or set(stripped) <= {"-", "."}:
             continue
         match = ABSORPTION_STATE_RE.match(line)
-        if not match:
+        transition_match = ABSORPTION_TRANSITION_RE.match(line)
+        if match:
+            state = int(match.group(1))
+            energy_cm1 = float(match.group(2))
+            wavelength_nm = float(match.group(3))
+            oscillator_strength = float(match.group(4))
+            energy_ev = energy_cm1 / 8065.54429
+        elif transition_match:
+            state = len(records) + 1
+            energy_ev = float(transition_match.group(1))
+            energy_cm1 = float(transition_match.group(2))
+            wavelength_nm = float(transition_match.group(3))
+            oscillator_strength = float(transition_match.group(4))
+        else:
             if records and re.match(r"^[A-Za-z]", stripped):
                 break
             continue
-        state = int(match.group(1))
-        energy_cm1 = float(match.group(2))
-        wavelength_nm = float(match.group(3))
-        oscillator_strength = float(match.group(4))
         records.append(
             {
                 "state": state,
                 "energy_cm^-1": energy_cm1,
-                "energy_eV": energy_cm1 / 8065.54429,
+                "energy_eV": energy_ev,
                 "wavelength_nm": wavelength_nm,
                 "oscillator_strength": oscillator_strength,
             }
@@ -352,6 +369,48 @@ def _extract_neb_points(lines: list[str]) -> pd.DataFrame:
         except ValueError:
             continue
         records.append({"image": image_index, "energy_hartree": energy})
+    return pd.DataFrame(records)
+
+
+def _extract_scan_points(lines: list[str]) -> pd.DataFrame:
+    records: list[dict[str, Any]] = []
+    in_block = False
+    capture_surface = False
+    for line in lines:
+        upper = line.upper()
+        stripped = line.strip()
+        if "RELAXED SURFACE SCAN RESULTS" in upper:
+            in_block = True
+            capture_surface = False
+            continue
+        if not in_block:
+            continue
+        if stripped.startswith("The Calculated Surface using the 'Actual Energy'"):
+            capture_surface = True
+            continue
+        if capture_surface and stripped.startswith("The Calculated Surface using the SCF energy"):
+            break
+        if not capture_surface:
+            continue
+        if not stripped or set(stripped) <= {"-", "."}:
+            continue
+        numbers = re.findall(r"-?\d+\.\d+|-?\d+", stripped)
+        if len(numbers) < 2:
+            if records and re.match(r"^[A-Za-z]", stripped):
+                break
+            continue
+        try:
+            coordinate = float(numbers[0])
+            energy = float(numbers[1])
+        except ValueError:
+            continue
+        records.append(
+            {
+                "step": len(records) + 1,
+                "coordinate": coordinate,
+                "energy_hartree": energy,
+            }
+        )
     return pd.DataFrame(records)
 
 
@@ -522,6 +581,7 @@ def _extract_metadata(
     metadata["has_tddft_spectrum"] = not result.excited_states.empty
     metadata["has_irc"] = not result.irc_points.empty
     metadata["has_neb"] = not result.neb_points.empty
+    metadata["has_scan"] = not result.scan_points.empty
     metadata["has_thermochemistry"] = bool(result.thermochemistry)
     metadata["has_transition_state_analysis"] = bool(result.transition_state_info)
 

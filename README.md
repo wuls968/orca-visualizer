@@ -1,191 +1,145 @@
-# ORCA Visualizer / ORCA 数据处理与可视化
+# ORCA Visualizer
 
-Local visualization software for ORCA outputs, cube grids, and GBW-derived properties.
+Cross-platform ORCA post-processing and visualization software built with `Python`, `Streamlit`, `ASE`, and `Plotly`.
 
-一个本地 ORCA 结果处理与可视化软件，基于 `Python + Streamlit + ASE + Plotly`，支持结构、频率、过渡态、光谱、cube、GBW 和后台驻留进程检测。
+支持 `macOS / Ubuntu / Windows` 的 ORCA 结果处理与可视化软件，面向本地科研工作流，覆盖输出解析、结构显示、谱图、路径、cube、GBW 和后台驻留任务检测。
 
-## Chinese
+## Highlights
 
-### 功能
+- Parse `.out`, `.log`, `.txt`, `.xyz`, `.cube`, and `.gbw`
+- Visualize structures, frequencies, vibrational modes, TDDFT spectra, IRC / NEB / Scan paths, and atomic charges
+- Generate electron density, spin density, ESP, HOMO/LUMO, and custom MO cubes from `GBW + orca_plot`
+- Provide transition-state diagnostics and thermochemistry summaries
+- Support Chinese / English UI switching
+- Include a cross-platform background-process monitor for ORCA / Python / Streamlit jobs
+- Run on `Windows`, `macOS`, and `Ubuntu/Linux` with launch scripts and CI coverage
 
-- 读取 `.out`、`.log`、`.txt`、`.xyz`、`.cube`、`.gbw`
-- 解析总能量、优化过程能量曲线、频率、虚频、TDDFT 光谱、IRC、NEB、过渡态和热化学量
-- 显示结构 3D 视图，支持球棍、空间填充、棒状、线框
-- 支持振动模式动画，播放时可调整视角
-- 显示 Mulliken / Loewdin 电荷的 2D 和 3D 分布
-- 可视化 cube 切片、等值面、ESP 和前线轨道
-- 使用 GBW + `orca_plot` 生成电子密度、自旋密度、ESP、HOMO/LUMO 和指定轨道 cube
-- 检测后台驻留进程，标记 ORCA / Python / Streamlit 的长时间高占用任务
-- 支持中英文界面切换
-- 支持主要图表导出为高分辨率 `PNG / SVG / PDF`
+## Platform Support
 
-### 目录
+The repository is maintained for:
 
-- [app.py](app.py)
-  Streamlit 主界面
-- [orca_viz/parser.py](orca_viz/parser.py)
-  ORCA 输出解析
-- [orca_viz/cube.py](orca_viz/cube.py)
-  cube 文件读取与网格采样
-- [orca_viz/gbw.py](orca_viz/gbw.py)
-  GBW sidecar 检测、`orca_plot` 查找与 cube 生成
-- [orca_viz/visualization.py](orca_viz/visualization.py)
-  结构、谱图、路径、振动模式和 cube 可视化
-- [orca_viz/process_monitor.py](orca_viz/process_monitor.py)
-  跨平台后台驻留进程检测
-- [tests](tests)
-  单元测试
+- `windows-latest`
+- `macos-latest`
+- `ubuntu-latest`
+- Python `3.10`, `3.11`, `3.12`
 
-### 环境要求
+This matrix is verified in GitHub Actions:
+[.github/workflows/ci.yml](.github/workflows/ci.yml)
 
-- macOS / Ubuntu / Linux / Windows 10+
-- Python 3.10 及以上
-- 如果使用 GBW 生成功能，需要安装 ORCA，并且能访问 `orca_plot`
+## Features
 
-### 安装
+### ORCA Output Analysis
 
-```bash
-git clone <your-repo-url>
-cd orca-visualizer
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
-```
+- Final energy and optimization energy trajectory
+- Frequencies, imaginary modes, and vibrational density broadening
+- Normal-mode animation
+- TDDFT / TDA absorption spectra
+- IRC / NEB / relaxed Scan pathway plots
+- Transition-state diagnosis, TS mode, active atoms, Hessian summary, and thermochemistry
+- Mulliken / Loewdin charges
 
-Windows PowerShell:
+### 3D Visualization
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-```
+- Ball-and-stick, space-filling, stick, and wireframe structure views
+- Direct atom picking for automatic `distance / angle / dihedral` measurements
+- Charge-colored 3D molecular views
+- Cube slice and isosurface rendering for density, ESP, and orbitals
 
-### 启动
+### GBW Workflow
 
-通用方式:
+- Auto-detect `orca_plot` where possible
+- Detect sidecar files such as `.densities`, `.densitiesinfo`, `.property.txt`, `.xyz`
+- Generate:
+  - electron density
+  - spin density
+  - electrostatic potential
+  - HOMO / LUMO
+  - custom molecular orbitals
 
-```bash
-python -m streamlit run app.py
-```
+### Utilities
 
-也可以直接使用脚本:
+- Background process monitor for resident ORCA / Python / Streamlit tasks
+- High-resolution figure export
+- Bilingual UI
 
-- macOS: [run_app.command](run_app.command)
-- Linux: [run_app.sh](run_app.sh)
-- Windows CMD: [run_app.bat](run_app.bat)
-- Windows PowerShell: [run_app.ps1](run_app.ps1)
+## Screens and Data Types
 
-### GBW 说明
+### Single-File Mode
 
-对于 `.gbw` 文件，推荐同时准备这些同名 sidecar：
+Supported inputs:
 
-- `.densities`
-- `.densitiesinfo`
-- `.property.txt`
+- `.out`
+- `.log`
+- `.txt`
 - `.xyz`
-- `.out` 或 `.log`
+- `.cube`
+- `.gbw`
 
-程序会尽量自动寻找 `orca_plot`。如果自动检测失败，可以在界面里手动填 ORCA 安装目录或 `orca_plot` 路径。
+### Batch Mode
 
-### 后台监控
+Use batch mode to compare multiple ORCA or cube files from:
 
-- 侧边栏新增“后台监控”模式
-- 会扫描当前用户的后台进程
-- 会标记 `ORCA / Python / Streamlit / 长时间高占用 / 驻留任务`
-- 默认只检测，不自动结束任何进程
+- multiple uploaded files
+- a local folder scanned recursively
 
-### 测试
+## Quick Start
+
+### 1. Clone the Repository
 
 ```bash
-python -m compileall -q app.py orca_viz tests
-python -m unittest discover -s tests
+git clone https://github.com/wuls968/orca-visualizer.git
+cd orca-visualizer
 ```
 
-### GitHub Actions
+### 2. Create a Virtual Environment
 
-仓库包含跨平台 CI：
-
-- Ubuntu
-- macOS
-- Windows
-- Python 3.10 / 3.11 / 3.12
-
-工作流文件在 [.github/workflows/ci.yml](.github/workflows/ci.yml)。
-
-## English
-
-### Features
-
-- Reads `.out`, `.log`, `.txt`, `.xyz`, `.cube`, and `.gbw`
-- Parses total energy, optimization energy trajectory, frequencies, imaginary modes, TDDFT spectra, IRC, NEB, transition states, and thermochemistry
-- Displays 3D molecular structures with ball-and-stick, space-filling, stick, and wireframe models
-- Plays vibrational mode animations while keeping camera interaction usable
-- Shows Mulliken / Loewdin charge distributions in both 2D and 3D
-- Visualizes cube slices, isosurfaces, ESP, and frontier orbitals
-- Generates electron density, spin density, ESP, HOMO/LUMO, and custom orbital cubes from GBW through `orca_plot`
-- Detects resident background processes and flags long-running ORCA / Python / Streamlit jobs
-- Supports Chinese / English UI switching
-- Exports major figures as high-resolution `PNG / SVG / PDF`
-
-### Project Layout
-
-- [app.py](app.py)
-  Main Streamlit app
-- [orca_viz/parser.py](orca_viz/parser.py)
-  ORCA output parser
-- [orca_viz/cube.py](orca_viz/cube.py)
-  cube reader and grid sampler
-- [orca_viz/gbw.py](orca_viz/gbw.py)
-  GBW sidecar discovery, `orca_plot` resolution, and cube generation
-- [orca_viz/visualization.py](orca_viz/visualization.py)
-  Structure, spectra, path, vibration, and cube visualization
-- [orca_viz/process_monitor.py](orca_viz/process_monitor.py)
-  Cross-platform background-process monitor
-- [tests](tests)
-  Unit tests
-
-### Requirements
-
-- macOS / Ubuntu / Linux / Windows 10+
-- Python 3.10+
-- ORCA and `orca_plot` if you want GBW-derived cube generation
-
-### Installation
+macOS / Ubuntu:
 
 ```bash
-git clone <your-repo-url>
-cd orca-visualizer
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
+python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
 Windows PowerShell:
 
 ```powershell
-python -m venv .venv
+py -3 -m venv .venv
 .\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-### Launch
+Windows CMD:
 
-Generic launch:
+```bat
+py -3 -m venv .venv
+call .venv\Scripts\activate.bat
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+### 3. Run the App
+
+Generic:
 
 ```bash
 python -m streamlit run app.py
 ```
 
-Platform-specific launchers:
+Platform launchers:
 
 - macOS: [run_app.command](run_app.command)
-- Linux: [run_app.sh](run_app.sh)
+- Ubuntu / Linux: [run_app.sh](run_app.sh)
 - Windows CMD: [run_app.bat](run_app.bat)
 - Windows PowerShell: [run_app.ps1](run_app.ps1)
 
-### GBW Notes
+## ORCA and GBW Notes
 
-For `.gbw` workflows, these same-stem sidecar files are recommended:
+If you want GBW-derived density or orbital cubes, install ORCA and make sure `orca_plot` is available.
+
+Recommended GBW sidecar files:
 
 - `.densities`
 - `.densitiesinfo`
@@ -193,29 +147,124 @@ For `.gbw` workflows, these same-stem sidecar files are recommended:
 - `.xyz`
 - `.out` or `.log`
 
-The app will try to auto-detect `orca_plot`. If that fails, provide the ORCA installation directory or the executable path manually in the UI.
+The app tries to auto-detect `orca_plot`. If detection fails, provide the ORCA installation directory or executable path in the UI.
 
-### Background Monitor
+## Structure Viewer Notes
 
-- A dedicated `Background Monitor` mode is available in the sidebar
-- It scans processes belonging to the current user
-- It highlights `ORCA / Python / Streamlit / long-running / resident` jobs
-- It does not terminate anything automatically
+- The structure viewer is bundled locally in the repository, so it does not depend on an external CDN to render molecules.
+- Direct picking works in the `Overview` and `Structure` tabs.
+- Measurement logic is automatic:
+  - select 2 atoms: distance
+  - select 3 atoms: angle
+  - select 4 atoms: dihedral
+  - click a selected atom again: unselect it
 
-### Tests
+## Sample Data
+
+Built-in examples are available in:
+
+- [sample_data](sample_data)
+
+Additional real ORCA test cases generated during development are available on the desktop:
+
+- `/Users/a0000/Desktop/orca_visualizer_test_cases`
+
+## Testing
+
+Run local verification with:
 
 ```bash
 python -m compileall -q app.py orca_viz tests
 python -m unittest discover -s tests
 ```
 
-### GitHub Actions
+Current CI covers:
 
-The repository includes cross-platform CI for:
-
-- Ubuntu
-- macOS
 - Windows
+- macOS
+- Ubuntu
 - Python 3.10 / 3.11 / 3.12
 
-Workflow file: [.github/workflows/ci.yml](.github/workflows/ci.yml)
+## Project Layout
+
+- [app.py](app.py): Streamlit UI
+- [orca_viz/parser.py](orca_viz/parser.py): ORCA output parsing
+- [orca_viz/cube.py](orca_viz/cube.py): cube reading and sampling
+- [orca_viz/gbw.py](orca_viz/gbw.py): GBW loading and `orca_plot` workflows
+- [orca_viz/visualization.py](orca_viz/visualization.py): figures, 3D viewers, animations
+- [orca_viz/process_monitor.py](orca_viz/process_monitor.py): cross-platform process monitor
+- [tests](tests): unit tests
+
+## Changelog
+
+See:
+
+- [CHANGELOG.md](CHANGELOG.md)
+
+## License
+
+This project is released under the MIT License.
+
+See:
+
+- [LICENSE](LICENSE)
+
+## 中文说明
+
+### 适用平台
+
+- Windows
+- macOS
+- Ubuntu / Linux
+- Python 3.10 / 3.11 / 3.12
+
+并通过 GitHub Actions 持续测试。
+
+### 主要功能
+
+- ORCA 输出解析：总能量、优化曲线、频率、虚频、TDDFT、IRC / NEB / Scan、过渡态、热化学
+- 结构 3D 可视化：球棍、空间填充、棒状、线框
+- 直接点原子自动测量：键长、键角、二面角
+- 电荷 2D / 3D 分布
+- cube 切片和等值面
+- GBW + `orca_plot` 波函数后处理
+- 后台驻留进程检测
+- 中英文界面切换
+
+### 启动方法
+
+通用命令：
+
+```bash
+python -m streamlit run app.py
+```
+
+也可以直接双击或执行：
+
+- [run_app.command](run_app.command)
+- [run_app.sh](run_app.sh)
+- [run_app.bat](run_app.bat)
+- [run_app.ps1](run_app.ps1)
+
+### GBW 注意事项
+
+如果要从 `.gbw` 生成电子密度、ESP 或轨道 cube，建议准备同名：
+
+- `.densities`
+- `.densitiesinfo`
+- `.property.txt`
+- `.xyz`
+- `.out/.log`
+
+### 结构测量说明
+
+- 选 2 个原子：显示键长
+- 选 3 个原子：显示键角
+- 选 4 个原子：显示二面角
+- 再点一次已选原子：取消选中
+
+### 更新记录
+
+详见：
+
+- [CHANGELOG.md](CHANGELOG.md)

@@ -9,6 +9,7 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
+from ase import Atoms
 
 from orca_viz import load_gbw_file, parse_cube_file, parse_orca_content, parse_orca_file
 from orca_viz.cube import (
@@ -30,6 +31,8 @@ from orca_viz.parser import OrcaParseResult, summarize_results
 from orca_viz.process_monitor import process_dataframe, snapshot_processes
 from orca_viz.visualization import (
     STATIC_IMAGE_EXPORT_AVAILABLE,
+    atom_reference_dataframe,
+    build_structure_viewer_html,
     build_vibration_mode_html,
     charge_extrema_dataframe,
     create_batch_energy_figure,
@@ -54,6 +57,53 @@ from orca_viz.visualization import (
 st.set_page_config(page_title="ORCA Visualizer", layout="wide")
 
 
+HARTREE_TO_KCAL_MOL = 627.509474
+PLOTLY_MODEBAR_TRANSLATIONS = {
+    "zh": {
+        "Zoom": "缩放",
+        "Pan": "平移",
+        "Zoom in": "放大",
+        "Zoom out": "缩小",
+        "Autoscale": "自动缩放",
+        "Reset axes": "重置坐标轴",
+        "Download plot as a png": "下载 PNG 图片",
+        "Box Select": "框选",
+        "Lasso Select": "套索选择",
+        "Toggle Spike Lines": "切换尖峰线",
+        "Show closest data on hover": "显示最近点悬浮信息",
+        "Compare data on hover": "比较悬浮信息",
+        "Orbit Rotation": "环绕旋转",
+        "Turntable Rotation": "转盘旋转",
+        "Reset camera to default": "重置默认视角",
+    },
+    "en": {
+        "缩放": "Zoom",
+        "平移": "Pan",
+        "放大": "Zoom in",
+        "缩小": "Zoom out",
+        "自动缩放": "Autoscale",
+        "重置坐标轴": "Reset axes",
+        "下载 PNG 图片": "Download plot as a png",
+        "框选": "Box Select",
+        "套索选择": "Lasso Select",
+        "切换尖峰线": "Toggle Spike Lines",
+        "显示最近点悬浮信息": "Show closest data on hover",
+        "比较悬浮信息": "Compare data on hover",
+        "环绕旋转": "Orbit Rotation",
+        "转盘旋转": "Turntable Rotation",
+        "重置默认视角": "Reset camera to default",
+    },
+}
+PLOTLY_MODEBAR_PREFIX_TRANSLATIONS = {
+    "zh": {
+        "Produced with Plotly.js": "基于 Plotly.js 构建",
+    },
+    "en": {
+        "基于 Plotly.js 构建": "Produced with Plotly.js",
+    },
+}
+
+
 def main() -> None:
     with st.sidebar:
         language_enabled = st.toggle(
@@ -64,9 +114,10 @@ def main() -> None:
     language = "en" if language_enabled else "zh"
     st.session_state["ui_language"] = language
     set_language(language)
+    _inject_plotly_modebar_localizer(language)
 
     st.title(tr("ORCA 数据处理与可视化"))
-    st.caption(tr("支持 ORCA 输出、TDDFT 光谱、IRC/NEB 路径、批量比较和 cube 轨道可视化"))
+    st.caption(tr("支持 ORCA 输出、TDDFT 光谱、IRC/NEB/Scan 路径、批量比较和 cube 轨道可视化"))
 
     with st.sidebar:
         mode_options = {
@@ -104,6 +155,116 @@ def main() -> None:
         _render_batch_mode()
     else:
         _render_process_monitor()
+
+
+def _plotly_config(*, enable_scroll_zoom: bool = False) -> dict[str, Any]:
+    language = st.session_state.get("ui_language", "zh")
+    return {
+        "displaylogo": False,
+        "responsive": True,
+        "scrollZoom": enable_scroll_zoom,
+        "locale": "zh-CN" if language == "zh" else "en-US",
+        "toImageButtonOptions": {
+            "format": "png",
+            "filename": "orca_visualizer_plot",
+            "scale": 3,
+        },
+    }
+
+
+def _render_plotly_chart(
+    figure: Any,
+    *,
+    key: str,
+    use_container_width: bool = True,
+    enable_scroll_zoom: bool = False,
+) -> None:
+    st.plotly_chart(
+        figure,
+        use_container_width=use_container_width,
+        key=key,
+        config=_plotly_config(enable_scroll_zoom=enable_scroll_zoom),
+    )
+
+
+def _inject_plotly_modebar_localizer(language: str) -> None:
+    script = f"""
+    <script>
+    const modebarLabels = {json.dumps(PLOTLY_MODEBAR_TRANSLATIONS, ensure_ascii=False)};
+    const prefixLabels = {json.dumps(PLOTLY_MODEBAR_PREFIX_TRANSLATIONS, ensure_ascii=False)};
+    const currentLanguage = {json.dumps(language)};
+
+    function translateLabel(label) {{
+      if (!label) return label;
+      const trimmed = label.trim();
+      const direct = (modebarLabels[currentLanguage] || {{}})[trimmed];
+      if (direct) return direct;
+      for (const [sourcePrefix, targetPrefix] of Object.entries(prefixLabels[currentLanguage] || {{}})) {{
+        if (trimmed.startsWith(sourcePrefix)) {{
+          return targetPrefix + trimmed.slice(sourcePrefix.length);
+        }}
+      }}
+      return trimmed;
+    }}
+
+    function patchModebar(documentRef) {{
+      if (!documentRef) return;
+      documentRef.querySelectorAll('.modebar-btn').forEach((button) => {{
+        const rawLabel = button.getAttribute('data-title') || button.getAttribute('title') || button.getAttribute('aria-label');
+        const translated = translateLabel(rawLabel);
+        if (!translated || translated === rawLabel) return;
+        button.setAttribute('data-title', translated);
+        button.setAttribute('title', translated);
+        button.setAttribute('aria-label', translated);
+      }});
+    }}
+
+    function patchAllModebars() {{
+      try {{
+        patchModebar(window.parent.document);
+        window.parent.document.querySelectorAll('iframe').forEach((frame) => {{
+          try {{
+            patchModebar(frame.contentDocument || frame.contentWindow.document);
+          }} catch (innerError) {{}}
+        }});
+      }} catch (error) {{}}
+    }}
+
+    patchAllModebars();
+    try {{
+      window.parent.__orcaPlotlyModebarLanguage = currentLanguage;
+      if (!window.parent.__orcaPlotlyModebarObserver) {{
+        const observer = new MutationObserver(() => patchAllModebars());
+        observer.observe(window.parent.document.body, {{ childList: true, subtree: true, attributes: true }});
+        window.parent.__orcaPlotlyModebarObserver = observer;
+        window.parent.__orcaPlotlyModebarTimer = window.parent.setInterval(patchAllModebars, 1200);
+      }}
+    }} catch (error) {{}}
+    </script>
+    """
+    components.html(script, height=0, width=0)
+
+
+def _render_structure_viewer_component(
+    atoms: Atoms,
+    *,
+    component_id: str,
+    representation: str,
+    show_atom_labels: bool,
+    enable_measurement: bool,
+    height: int = 760,
+) -> None:
+    components.html(
+        build_structure_viewer_html(
+            atoms,
+            representation=representation,
+            show_atom_labels=show_atom_labels,
+            enable_measurement=enable_measurement,
+            component_id=component_id,
+        ),
+        height=height,
+        scrolling=False,
+    )
 
 
 def _render_single_mode() -> None:
@@ -170,15 +331,13 @@ def _render_batch_mode() -> None:
         st.dataframe(summary_df, hide_index=True, use_container_width=True)
         left, right = st.columns(2)
         with left:
-            st.plotly_chart(
+            _render_plotly_chart(
                 create_batch_energy_figure(summary_df),
-                use_container_width=True,
                 key="batch-energy-chart",
             )
         with right:
-            st.plotly_chart(
+            _render_plotly_chart(
                 create_batch_excited_state_figure(summary_df),
-                use_container_width=True,
                 key="batch-excited-state-chart",
             )
         _download_dataframe(tr("下载 ORCA 汇总 CSV"), summary_df, "orca_batch_summary.csv")
@@ -382,28 +541,32 @@ def _render_orca_analysis(result: OrcaParseResult) -> None:
                 hide_index=True,
                 use_container_width=True,
             )
-            right.plotly_chart(
-                create_structure_figure(
+            with right:
+                _render_structure_viewer_component(
                     result.atoms,
+                    component_id=f"{base_key}-overview-viewer",
                     representation=structure_representation,
                     show_atom_labels=show_atom_labels,
-                ),
-                use_container_width=True,
-                key=f"{base_key}-overview-structure",
-            )
+                    enable_measurement=True,
+                    height=760,
+                )
+                with st.expander(tr("原子索引参考"), expanded=False):
+                    st.dataframe(
+                        atom_reference_dataframe(result.atoms),
+                        hide_index=True,
+                        use_container_width=True,
+                    )
         else:
             left.info(tr("未解析到结构。"))
 
         if result.energies_hartree:
-            st.plotly_chart(
+            _render_plotly_chart(
                 create_energy_figure(result.energies_hartree),
-                use_container_width=True,
                 key=f"{base_key}-overview-energy",
             )
         if not result.excited_states.empty:
-            st.plotly_chart(
+            _render_plotly_chart(
                 create_uv_vis_figure(result.excited_states),
-                use_container_width=True,
                 key=f"{base_key}-overview-uv",
             )
 
@@ -412,14 +575,13 @@ def _render_orca_analysis(result: OrcaParseResult) -> None:
         if result.atoms is None:
             st.info(tr("当前文件未解析出结构。"))
         else:
-            st.plotly_chart(
-                create_structure_figure(
-                    result.atoms,
-                    representation=structure_representation,
-                    show_atom_labels=show_atom_labels,
-                ),
-                use_container_width=True,
-                key=f"{base_key}-structure-tab",
+            _render_structure_viewer_component(
+                result.atoms,
+                component_id=f"{base_key}-structure-viewer",
+                representation=structure_representation,
+                show_atom_labels=show_atom_labels,
+                enable_measurement=True,
+                height=760,
             )
             coords = pd.DataFrame(result.atoms.get_positions(), columns=["x", "y", "z"])
             coords.insert(0, "element", result.atoms.get_chemical_symbols())
@@ -429,9 +591,8 @@ def _render_orca_analysis(result: OrcaParseResult) -> None:
     with tabs[2]:
         st.caption(tr("能量页基于 `FINAL SINGLE POINT ENERGY` 历史记录绘制优化曲线。"))
         if result.energies_hartree:
-            st.plotly_chart(
+            _render_plotly_chart(
                 create_energy_figure(result.energies_hartree),
-                use_container_width=True,
                 key=f"{base_key}-energy-tab",
             )
             energies_df = pd.DataFrame(
@@ -450,9 +611,8 @@ def _render_orca_analysis(result: OrcaParseResult) -> None:
         left, right = st.columns(2)
         with left:
             if result.frequencies_cm1:
-                st.plotly_chart(
+                _render_plotly_chart(
                     create_frequency_figure(result.frequencies_cm1),
-                    use_container_width=True,
                     key=f"{base_key}-frequency-bar",
                 )
                 freq_df = pd.DataFrame(
@@ -469,9 +629,8 @@ def _render_orca_analysis(result: OrcaParseResult) -> None:
                 st.info(tr("当前文件未解析出频率数据。"))
         with right:
             if result.frequencies_cm1:
-                st.plotly_chart(
+                _render_plotly_chart(
                     create_vibrational_density_figure(result.frequencies_cm1),
-                    use_container_width=True,
                     key=f"{base_key}-frequency-density",
                 )
                 _render_vibration_mode_panel(result, base_key)
@@ -483,9 +642,38 @@ def _render_orca_analysis(result: OrcaParseResult) -> None:
         if result.excited_states.empty:
             st.info(tr("当前文件未解析出 TDDFT 吸收光谱。"))
         else:
-            st.plotly_chart(
-                create_uv_vis_figure(result.excited_states),
-                use_container_width=True,
+            settings_col, summary_col = st.columns([1, 2])
+            with settings_col:
+                st.caption(tr("谱图设置"))
+                sigma_ev = st.slider(
+                    tr("展宽参数 sigma (eV)"),
+                    min_value=0.03,
+                    max_value=0.40,
+                    value=0.12,
+                    step=0.01,
+                    key=f"{base_key}-uv-sigma",
+                )
+            strongest_state = result.excited_states.loc[result.excited_states["oscillator_strength"].idxmax()]
+            with summary_col:
+                metric_cols = st.columns(4)
+                metric_cols[0].metric(
+                    tr("最低激发能 (eV)"),
+                    f"{result.excited_states['energy_eV'].min():.3f}",
+                )
+                metric_cols[1].metric(
+                    tr("最强振子强度"),
+                    f"{strongest_state['oscillator_strength']:.4f}",
+                )
+                metric_cols[2].metric(
+                    tr("最强跃迁波长 (nm)"),
+                    f"{strongest_state['wavelength_nm']:.1f}",
+                )
+                metric_cols[3].metric(
+                    tr("最强跃迁态"),
+                    f"S{int(strongest_state['state'])}",
+                )
+            _render_plotly_chart(
+                create_uv_vis_figure(result.excited_states, sigma_ev=sigma_ev),
                 key=f"{base_key}-uv-tab",
             )
             st.dataframe(result.excited_states, hide_index=True, use_container_width=True)
@@ -496,46 +684,41 @@ def _render_orca_analysis(result: OrcaParseResult) -> None:
             )
 
     with tabs[5]:
-        st.caption(tr("路径页会自动识别 IRC 或 NEB 数据，并分别绘制反应路径能量。"))
-        left, right = st.columns(2)
-        with left:
-            if result.irc_points.empty:
-                st.info(tr("当前文件未解析出 IRC 路径。"))
-            else:
-                st.plotly_chart(
-                    create_path_figure(
-                        result.irc_points,
-                        "coordinate",
-                        "energy_hartree",
-                        tr("IRC 路径能量"),
-                        tr("反应坐标"),
-                    ),
-                    use_container_width=True,
-                    key=f"{base_key}-irc-path",
-                )
-                st.dataframe(result.irc_points, hide_index=True, use_container_width=True)
-                _download_dataframe(
-                    tr("下载 IRC CSV"), result.irc_points, f"{Path(result.source_name).stem}_irc.csv"
-                )
-        with right:
-            if result.neb_points.empty:
-                st.info(tr("当前文件未解析出 NEB 路径。"))
-            else:
-                st.plotly_chart(
-                    create_path_figure(
-                        result.neb_points,
-                        "image",
-                        "energy_hartree",
-                        tr("NEB 路径能量"),
-                        "Image",
-                    ),
-                    use_container_width=True,
-                    key=f"{base_key}-neb-path",
-                )
-                st.dataframe(result.neb_points, hide_index=True, use_container_width=True)
-                _download_dataframe(
-                    tr("下载 NEB CSV"), result.neb_points, f"{Path(result.source_name).stem}_neb.csv"
-                )
+        st.caption(tr("路径页会自动识别 IRC、NEB 或 Scan 数据，并默认显示相对能量。"))
+        st.caption(tr("路径数据表会同时保留绝对能量和相对能量。"))
+        _render_path_section(
+            result.irc_points,
+            x_col="coordinate",
+            y_col="energy_hartree",
+            title=tr("IRC 路径能量"),
+            x_label=tr("反应坐标"),
+            empty_message=tr("当前文件未解析出 IRC 路径。"),
+            download_label=tr("下载 IRC CSV"),
+            file_name=f"{Path(result.source_name).stem}_irc.csv",
+            key_prefix=f"{base_key}-irc-path",
+        )
+        _render_path_section(
+            result.neb_points,
+            x_col="image",
+            y_col="energy_hartree",
+            title=tr("NEB 路径能量"),
+            x_label="Image",
+            empty_message=tr("当前文件未解析出 NEB 路径。"),
+            download_label=tr("下载 NEB CSV"),
+            file_name=f"{Path(result.source_name).stem}_neb.csv",
+            key_prefix=f"{base_key}-neb-path",
+        )
+        _render_path_section(
+            result.scan_points,
+            x_col="coordinate",
+            y_col="energy_hartree",
+            title=tr("Scan 路径能量"),
+            x_label=tr("扫描坐标"),
+            empty_message=tr("当前文件未解析出 Scan 路径。"),
+            download_label=tr("下载 Scan CSV"),
+            file_name=f"{Path(result.source_name).stem}_scan.csv",
+            key_prefix=f"{base_key}-scan-path",
+        )
 
     with tabs[6]:
         st.caption(tr("电荷页需要 Mulliken 或 Loewdin 原子电荷块。"))
@@ -545,9 +728,8 @@ def _render_orca_analysis(result: OrcaParseResult) -> None:
                 st.info(tr("未解析到 Mulliken 电荷。"))
             else:
                 mulliken_bar = create_charge_figure(result.mulliken_charges, tr("Mulliken 原子电荷"))
-                st.plotly_chart(
+                _render_plotly_chart(
                     mulliken_bar,
-                    use_container_width=True,
                     key=f"{base_key}-mulliken-charge",
                 )
                 if result.atoms is not None:
@@ -558,10 +740,10 @@ def _render_orca_analysis(result: OrcaParseResult) -> None:
                         show_charge_labels=show_atom_labels,
                         representation=structure_representation,
                     )
-                    st.plotly_chart(
+                    _render_plotly_chart(
                         mulliken_3d,
-                        use_container_width=True,
                         key=f"{base_key}-mulliken-charge-3d",
+                        enable_scroll_zoom=True,
                     )
                     st.caption(tr("3D 图里红色偏正、蓝色偏负，球越大表示电荷绝对值越大。"))
                     st.dataframe(
@@ -591,9 +773,8 @@ def _render_orca_analysis(result: OrcaParseResult) -> None:
                 st.info(tr("未解析到 Loewdin 电荷。"))
             else:
                 loewdin_bar = create_charge_figure(result.loewdin_charges, tr("Loewdin 原子电荷"))
-                st.plotly_chart(
+                _render_plotly_chart(
                     loewdin_bar,
-                    use_container_width=True,
                     key=f"{base_key}-loewdin-charge",
                 )
                 if result.atoms is not None:
@@ -604,10 +785,10 @@ def _render_orca_analysis(result: OrcaParseResult) -> None:
                         show_charge_labels=show_atom_labels,
                         representation=structure_representation,
                     )
-                    st.plotly_chart(
+                    _render_plotly_chart(
                         loewdin_3d,
-                        use_container_width=True,
                         key=f"{base_key}-loewdin-charge-3d",
+                        enable_scroll_zoom=True,
                     )
                     st.caption(tr("3D 图里颜色和球大小都直接反映原子电荷分布。"))
                     st.dataframe(
@@ -689,15 +870,16 @@ def _render_cube_analysis(cube: CubeData, show_page_note: bool = True) -> None:
         st.caption(tr("总览页显示网格摘要和参考结构。当前自动识别为：{cube_kind_name}。", cube_kind_name=cube_kind_name))
         left, right = st.columns([1, 2])
         left.dataframe(cube_summary_dataframe(cube), hide_index=True, use_container_width=True)
-        right.plotly_chart(
-            create_structure_figure(
-                cube.atoms,
-                representation=structure_representation,
-                show_atom_labels=show_atom_labels,
-            ),
-            use_container_width=True,
-            key=f"{base_key}-cube-structure",
-        )
+        with right:
+            _render_plotly_chart(
+                create_structure_figure(
+                    cube.atoms,
+                    representation=structure_representation,
+                    show_atom_labels=show_atom_labels,
+                ),
+                key=f"{base_key}-cube-structure",
+                enable_scroll_zoom=True,
+            )
 
     with tabs[1]:
         if cube_kind == "esp":
@@ -716,9 +898,8 @@ def _render_cube_analysis(cube: CubeData, show_page_note: bool = True) -> None:
             key=f"{base_key}-slice-index",
         )
         slice_figure = create_cube_slice_figure(cube, axis=axis, index=index)
-        st.plotly_chart(
+        _render_plotly_chart(
             slice_figure,
-            use_container_width=True,
             key=f"{base_key}-cube-slice",
         )
         _render_figure_export_controls(
@@ -770,10 +951,10 @@ def _render_cube_analysis(cube: CubeData, show_page_note: bool = True) -> None:
             show_structure=show_structure,
             opacity=surface_opacity,
         )
-        st.plotly_chart(
+        _render_plotly_chart(
             isosurface_figure,
-            use_container_width=True,
             key=f"{base_key}-cube-isosurface",
+            enable_scroll_zoom=True,
         )
         _render_figure_export_controls(
             isosurface_figure,
@@ -816,7 +997,7 @@ def _render_feature_preview() -> None:
             line1=tr("读取 ORCA `.out/.log/.txt`、`.xyz`、`.cube`、`.gbw`"),
             line2=tr("解析总能量、最终结构、频率、电荷、TDDFT 吸收光谱"),
             line3=tr("自动识别过渡态并给出虚频与热化学摘要"),
-            line4=tr("解析并绘制 IRC / NEB 路径能量"),
+            line4=tr("解析并绘制 IRC / NEB / Scan 路径能量"),
             line5=tr("对多个 ORCA 文件做批量比较"),
             line6=tr("对 cube 轨道文件做切片和 3D 等值面可视化"),
             line7=tr("在电荷页提供 Mulliken / Loewdin 的 3D 电荷分布图"),
@@ -1227,9 +1408,8 @@ def _render_vibration_mode_panel(result: OrcaParseResult, base_key: str) -> None
         height=640,
         scrolling=False,
     )
-    st.plotly_chart(
+    _render_plotly_chart(
         create_mode_magnitude_figure(result.atoms, mode_displacements),
-        use_container_width=True,
         key=f"{base_key}-mode-magnitude-{selected_mode}",
     )
     st.dataframe(
@@ -1349,6 +1529,57 @@ def _localize_process_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
             "command": tr("命令"),
         }
     )
+
+
+def _render_path_section(
+    dataframe: pd.DataFrame,
+    x_col: str,
+    y_col: str,
+    title: str,
+    x_label: str,
+    empty_message: str,
+    download_label: str,
+    file_name: str,
+    key_prefix: str,
+) -> None:
+    st.subheader(title)
+    if dataframe.empty:
+        st.info(empty_message)
+        return
+
+    display_df = _path_display_dataframe(dataframe, x_col=x_col, y_col=y_col)
+    metric_cols = st.columns(4)
+    metric_cols[0].metric(tr("路径点数"), len(display_df))
+    metric_cols[1].metric(tr("最低相对能量 (kcal/mol)"), f"{display_df['relative_energy_kcal_mol'].min():.2f}")
+    metric_cols[2].metric(tr("最高相对能量 (kcal/mol)"), f"{display_df['relative_energy_kcal_mol'].max():.2f}")
+    metric_cols[3].metric(
+        tr("终点相对能量 (kcal/mol)"),
+        f"{display_df['relative_energy_kcal_mol'].iloc[-1]:.2f}",
+    )
+    _render_plotly_chart(
+        create_path_figure(
+            display_df,
+            x_col,
+            "relative_energy_kcal_mol",
+            title,
+            x_label,
+            y_label=tr("相对能量 (kcal/mol)"),
+            y_hover_format=".2f",
+            y_suffix=" kcal/mol",
+        ),
+        key=key_prefix,
+    )
+    st.dataframe(display_df, hide_index=True, use_container_width=True)
+    _download_dataframe(download_label, display_df, file_name)
+
+
+def _path_display_dataframe(dataframe: pd.DataFrame, x_col: str, y_col: str) -> pd.DataFrame:
+    display_df = dataframe.sort_values(x_col).reset_index(drop=True).copy()
+    minimum_energy = float(display_df[y_col].min())
+    display_df["relative_energy_kcal_mol"] = (
+        display_df[y_col].astype(float) - minimum_energy
+    ) * HARTREE_TO_KCAL_MOL
+    return display_df
 
 
 def _render_figure_export_controls(
