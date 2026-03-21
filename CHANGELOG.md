@@ -2,6 +2,30 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased] - 2026-03-21
+
+### Changed
+
+- Added package metadata in `pyproject.toml`, CLI entrypoints, and separate end-user vs developer installation paths
+- Added cross-platform install launchers `install_app.sh/.command/.ps1/.bat`
+- Switched runtime launchers to install and run the packaged app instead of only raw dependency bootstrapping
+- Added a dedicated Environment Doctor page for ORCA utility/plugin detection and install guidance
+- Unified GBW `orca_plot` lookup with the shared ORCA runtime detection layer
+- Refactored the Streamlit entrypoint into a thinner router and moved page/UI logic into `orca_viz/ui`
+- Added a shared scientific figure theme in `orca_viz/plot_theme.py` and a preset-based export layer in `orca_viz/exporting.py`
+- Split the former monolithic `orca_viz/visualization.py` implementation into `orca_viz/plots/structure.py`, `spectra.py`, `cube.py`, `charges.py`, and `pathways.py`, while keeping a compatibility export layer
+- Reworked the single-file empty state into a clearer card-based landing page with stronger workflow guidance
+- Unified the default styling of energy, frequency, vibrational, TDDFT, pathway, charge, and cube figures
+- Upgraded figure export controls to `Paper / Presentation / Web` presets with normalized file names, font controls, and background controls
+- Added persistent run-status panels for GBW density scanning and `orca_plot` cube generation
+- Tuned 3D structure and isosurface defaults for cleaner screenshots and more stable scientific presentation
+
+### Validation
+
+- Re-ran local unit tests with the project virtual environment after the install/runtime refactor
+- Generated new lightweight real-ORCA validation cases on `2026-03-21`
+- Verified parser, path, spectrum, GBW-to-cube, and export workflows with the desktop bundle at `/Users/a0000/Desktop/orca_visualizer_test_cases/20260321_refactor_validation`
+
 ## [0.1.0] - 2026-03-20
 
 ### Added

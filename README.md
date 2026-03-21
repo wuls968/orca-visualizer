@@ -12,6 +12,9 @@ Cross-platform ORCA post-processing and visualization software built with `Pytho
 - Provide transition-state diagnostics and thermochemistry summaries
 - Support Chinese / English UI switching
 - Include a cross-platform background-process monitor for ORCA / Python / Streamlit jobs
+- Provide a card-based landing page and clearer upload-before/upload-after states
+- Ship unified figure styling and export presets for `Paper / Presentation / Web`
+- Show persistent task status for GBW density scanning and cube generation
 - Run on `Windows`, `macOS`, and `Ubuntu/Linux` with launch scripts and CI coverage
 
 ## Platform Support
@@ -59,8 +62,20 @@ This matrix is verified in GitHub Actions:
 ### Utilities
 
 - Background process monitor for resident ORCA / Python / Streamlit tasks
-- High-resolution figure export
+- High-resolution figure export with preset-based defaults
 - Bilingual UI
+
+### Export Presets
+
+- `Paper`: larger canvas, tighter typography, vector-friendly defaults
+- `Presentation`: 16:9 layout and larger labels for slide decks
+- `Web`: lighter canvas for browser previews and screenshots
+
+Supported export targets:
+
+- `PNG`
+- `SVG`
+- `PDF`
 
 ## Screens and Data Types
 
@@ -91,15 +106,50 @@ git clone https://github.com/wuls968/orca-visualizer.git
 cd orca-visualizer
 ```
 
-### 2. Create a Virtual Environment
+### 2. End-User Install
+
+If you mainly want to use the software instead of developing it, prefer the install scripts:
+
+- macOS: double-click `install_app.command`, then `run_app.command`
+- Ubuntu / Linux:
+
+```bash
+bash install_app.sh
+bash run_app.sh
+```
+
+- Windows PowerShell:
+
+```powershell
+.\install_app.ps1
+.\run_app.ps1
+```
+
+- Windows CMD:
+
+```bat
+install_app.bat
+run_app.bat
+```
+
+The install scripts:
+
+- create `.venv` automatically if needed
+- upgrade `pip / setuptools / wheel`
+- install the packaged app with `pip install .`
+- keep the launch path short for non-developer users
+
+### 3. Developer Install
+
+For active development, use an editable install so source-code changes apply immediately.
 
 macOS / Ubuntu:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -r requirements-dev.txt
 ```
 
 Windows PowerShell:
@@ -107,8 +157,8 @@ Windows PowerShell:
 ```powershell
 py -3 -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -r requirements-dev.txt
 ```
 
 Windows CMD:
@@ -116,16 +166,28 @@ Windows CMD:
 ```bat
 py -3 -m venv .venv
 call .venv\Scripts\activate.bat
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -r requirements-dev.txt
 ```
 
-### 3. Run the App
+Equivalent developer install command:
+
+```bash
+python -m pip install -e ".[dev]"
+```
+
+### 4. Run the App
 
 Generic:
 
 ```bash
 python -m streamlit run app.py
+```
+
+After the packaged end-user install, the CLI launcher is also available:
+
+```bash
+orca-visualizer
 ```
 
 Platform launchers:
@@ -134,6 +196,43 @@ Platform launchers:
 - Ubuntu / Linux: [run_app.sh](run_app.sh)
 - Windows CMD: [run_app.bat](run_app.bat)
 - Windows PowerShell: [run_app.ps1](run_app.ps1)
+
+## Environment Doctor and ORCA Tool Detection
+
+The app now includes a dedicated `Environment Doctor` mode in the sidebar.
+
+It checks:
+
+- Python runtime and package versions
+- `ORCA_HOME`
+- auto-detected ORCA version from installation paths
+- whether key ORCA utilities are usable, including:
+  - `orca`
+  - `orca_plot`
+  - `orca_2json`
+  - `orca_2mkl`
+  - `orca_mapspc`
+  - `orca_vib`
+  - `orca_pltvib`
+  - `orca_nmrspectrum`
+
+The same logic is available from the command line:
+
+```bash
+python -m orca_viz.cli doctor
+python -m orca_viz.cli doctor --json
+
+# after packaged install
+orca-viz-doctor
+orca-viz-doctor --json
+```
+
+When no manual path is provided, the detector searches:
+
+- current-process `PATH`
+- current-process `ORCA_HOME`
+- login-shell `PATH` and `ORCA_HOME`
+- common ORCA installation directories on Windows / macOS / Ubuntu
 
 ## ORCA and GBW Notes
 
@@ -168,6 +267,15 @@ Built-in examples are available in:
 Additional real ORCA test cases generated during development are available on the desktop:
 
 - `/Users/a0000/Desktop/orca_visualizer_test_cases`
+- `/Users/a0000/Desktop/orca_visualizer_test_cases/20260321_refactor_validation`
+
+The `20260321_refactor_validation` bundle includes:
+
+- real ORCA `FREQ` output for `H2O`
+- real ORCA `TDDFT/TDA` output for `H2O`
+- real ORCA relaxed `Scan` output for `H2`
+- generated figure exports that validate the new export presets
+- a short validation report and machine-readable summary
 
 ## Testing
 
@@ -175,7 +283,7 @@ Run local verification with:
 
 ```bash
 python -m compileall -q app.py orca_viz tests
-python -m unittest discover -s tests
+.venv/bin/python -m unittest discover -s tests
 ```
 
 Current CI covers:
@@ -187,11 +295,19 @@ Current CI covers:
 
 ## Project Layout
 
-- [app.py](app.py): Streamlit UI
+- [app.py](app.py): thin Streamlit entrypoint and routing
+- [pyproject.toml](pyproject.toml): package metadata, runtime dependencies, and CLI entrypoints
 - [orca_viz/parser.py](orca_viz/parser.py): ORCA output parsing
 - [orca_viz/cube.py](orca_viz/cube.py): cube reading and sampling
 - [orca_viz/gbw.py](orca_viz/gbw.py): GBW loading and `orca_plot` workflows
+- [orca_viz/orca_runtime.py](orca_viz/orca_runtime.py): ORCA runtime and utility detection
+- [orca_viz/streamlit_app.py](orca_viz/streamlit_app.py): packaged Streamlit app entrypoint
+- [orca_viz/cli.py](orca_viz/cli.py): CLI launch and environment-doctor commands
 - [orca_viz/visualization.py](orca_viz/visualization.py): figures, 3D viewers, animations
+- [orca_viz/plots](orca_viz/plots): split plotting modules for `structure / spectra / cube / charges / pathways`
+- [orca_viz/plot_theme.py](orca_viz/plot_theme.py): shared scientific plot theme
+- [orca_viz/exporting.py](orca_viz/exporting.py): preset-based export pipeline
+- [orca_viz/ui](orca_viz/ui): page layer, UI components, export controls, and data-loading helpers
 - [orca_viz/process_monitor.py](orca_viz/process_monitor.py): cross-platform process monitor
 - [tests](tests): unit tests
 
@@ -228,6 +344,7 @@ See:
 - 电荷 2D / 3D 分布
 - cube 切片和等值面
 - GBW + `orca_plot` 波函数后处理
+- 环境检测：自动检查 `orca / orca_plot / orca_2json / orca_2mkl` 等工具可用性
 - 后台驻留进程检测
 - 中英文界面切换
 
