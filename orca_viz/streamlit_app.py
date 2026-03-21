@@ -49,6 +49,7 @@ def _configure_language() -> None:
 
 
 def _render_sidebar() -> str:
+    _apply_pending_mode_navigation()
     with st.sidebar:
         mode_labels = {
             "single": tr("单文件分析"),
@@ -97,6 +98,12 @@ def _render_sidebar() -> str:
             st.checkbox(tr("显示原子标签"), value=False, key="global-structure-labels")
 
     return selected_mode
+
+
+def _apply_pending_mode_navigation() -> None:
+    pending_mode = st.session_state.pop("app-mode-radio-pending", None)
+    if pending_mode:
+        st.session_state["app-mode-radio"] = pending_mode
 
 
 def _render_single_mode() -> None:

@@ -94,7 +94,7 @@ def render_single_mode_empty_state(intent: str = "") -> None:
                     use_container_width=True,
                     type="primary" if card["primary"] else "secondary",
                 ):
-                    st.session_state["app-mode-radio"] = card["mode"]
+                    st.session_state["app-mode-radio-pending"] = card["mode"]
                     if card["intent"]:
                         st.session_state["single-landing-intent"] = card["intent"]
                     else:
