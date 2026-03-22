@@ -84,6 +84,20 @@ PYTHON_PACKAGE_NAMES = [
     "scikit-image",
 ]
 
+ORCA_HOME_ENV_VARS = [
+    "ORCA_HOME",
+    "ORCA_ROOT",
+    "ORCA_DIR",
+    "ORCA_BIN",
+]
+
+ORCA_SEED_EXECUTABLES = [
+    "orca",
+    "orca_plot",
+    "orca_2json",
+    "orca_2mkl",
+]
+
 
 def detect_orca_environment(
     *,
@@ -104,7 +118,7 @@ def detect_orca_environment(
             login_env=login_env,
         )
         if detected_home is None and resolved is not None:
-            detected_home = str(resolved.parent)
+            detected_home = str(_candidate_roots_from_executable(resolved)[-1].resolve())
         statuses.append(
             OrcaToolStatus(
                 key=spec.key,
@@ -321,41 +335,55 @@ def _candidate_paths(
     login_env: dict[str, str],
 ) -> list[Path]:
     candidates: list[Path] = []
+    candidate_roots: list[Path] = []
 
     for raw_hint in [path_hint.strip(), orca_home_hint.strip()]:
         if not raw_hint:
             continue
         hinted = Path(raw_hint).expanduser()
         if hinted.is_file():
-            candidates.append(hinted)
-            candidates.extend(hinted.parent / name for name in executable_names)
+            if hinted.name in executable_names:
+                candidates.append(hinted)
+            candidate_roots.extend(_candidate_roots_from_executable(hinted))
         elif hinted.is_dir():
-            candidates.extend(hinted / name for name in executable_names)
+            candidate_roots.append(hinted)
+            candidate_roots.extend(_scan_orca_roots(hinted))
 
     for executable_name in executable_names:
         which_result = shutil.which(executable_name)
         if which_result:
             candidates.append(Path(which_result))
+            candidate_roots.extend(_candidate_roots_from_executable(Path(which_result)))
 
-    for env_home in filter(
-        None,
-        [
-            os.environ.get("ORCA_HOME", "").strip(),
-            login_env.get("ORCA_HOME", "").strip(),
-        ],
-    ):
-        candidates.extend(Path(env_home) / name for name in executable_names)
+    for seed_executable in ORCA_SEED_EXECUTABLES:
+        which_result = shutil.which(seed_executable)
+        if which_result:
+            candidate_roots.extend(_candidate_roots_from_executable(Path(which_result)))
+
+    for env_home in _orca_env_hints(login_env):
+        env_path = Path(env_home).expanduser()
+        if env_path.is_file():
+            candidate_roots.extend(_candidate_roots_from_executable(env_path))
+        elif env_path.is_dir():
+            candidate_roots.append(env_path)
+            candidate_roots.extend(_scan_orca_roots(env_path))
 
     path_separator = ";" if os.name == "nt" else ":"
     for path_entry in login_env.get("PATH", "").split(path_separator):
         path_entry = path_entry.strip()
         if path_entry:
-            candidates.extend(Path(path_entry) / name for name in executable_names)
+            path_dir = Path(path_entry)
+            candidate_roots.append(path_dir)
+            candidate_roots.extend(_scan_orca_roots(path_dir))
 
     for base_dir in _common_orca_directories():
         if not base_dir.exists():
             continue
-        candidates.extend(_scan_orca_candidates(base_dir, executable_names))
+        candidate_roots.append(base_dir)
+        candidate_roots.extend(_scan_orca_roots(base_dir))
+
+    for root in candidate_roots:
+        candidates.extend(_executable_candidates_from_root(root, executable_names))
 
     deduped: list[Path] = []
     seen: set[str] = set()
@@ -396,9 +424,9 @@ def _executable_names(executable: str) -> list[str]:
     if not raw:
         return []
     if platform.system() == "Windows":
-        if raw.lower().endswith((".exe", ".bat")):
+        if raw.lower().endswith((".exe", ".bat", ".cmd")):
             return [raw]
-        return [f"{raw}.exe", f"{raw}.bat", raw]
+        return [f"{raw}.exe", f"{raw}.bat", f"{raw}.cmd", raw]
     return [raw]
 
 
@@ -421,19 +449,39 @@ def _common_orca_directories() -> list[Path]:
     ]
 
 
-def _scan_orca_candidates(base_dir: Path, executable_names: list[str]) -> list[Path]:
-    candidates: list[Path] = []
-    for executable_name in executable_names:
-        direct_candidate = base_dir / executable_name
-        if direct_candidate.exists():
-            candidates.append(direct_candidate)
+def _scan_orca_roots(base_dir: Path) -> list[Path]:
+    roots: list[Path] = []
+    if not base_dir.exists() or not base_dir.is_dir():
+        return roots
 
-    patterns = ["orca*", "ORCA*", "orca_*", "*orca*"]
+    patterns = ["orca*", "ORCA*", "*orca*"]
     for pattern in patterns:
         for path in base_dir.glob(pattern):
-            if not path.is_dir():
-                continue
-            for executable_name in executable_names:
-                candidates.append(path / executable_name)
-                candidates.append(path / "bin" / executable_name)
+            if path.is_dir():
+                roots.append(path)
+    return roots
+
+
+def _executable_candidates_from_root(root: Path, executable_names: list[str]) -> list[Path]:
+    candidates: list[Path] = []
+    for executable_name in executable_names:
+        candidates.append(root / executable_name)
+        candidates.append(root / "bin" / executable_name)
     return candidates
+
+
+def _candidate_roots_from_executable(executable_path: Path) -> list[Path]:
+    roots = [executable_path.parent]
+    if executable_path.parent.name.lower() == "bin":
+        roots.append(executable_path.parent.parent)
+    return roots
+
+
+def _orca_env_hints(login_env: dict[str, str]) -> list[str]:
+    hints: list[str] = []
+    for env_name in ORCA_HOME_ENV_VARS:
+        for env_source in (os.environ, login_env):
+            raw_value = env_source.get(env_name, "").strip()
+            if raw_value:
+                hints.append(raw_value)
+    return hints

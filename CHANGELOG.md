@@ -2,6 +2,24 @@
 
 All notable changes to this project are documented here.
 
+## [1.0.0] - 2026-03-22
+
+### Major Update
+
+- Reworked the visualization styling direction from page-level themes into a figure-first color-scheme system focused on scientific output variety
+- Added unified plotting color schemes that now propagate through 2D figures, 3D molecular views, cube rendering, animations, static exports, and video exports
+- Fixed hydrogen visibility on light backgrounds by introducing explicit display colors and outlines instead of relying on pure white atom fills
+- Tightened structure-viewer coloring so Plotly figures, the embedded 3D viewer, pathway animation, vibration animation, and exports inherit the same atom-color logic
+- Continued hardening GBW, pathway, export, and structure workflows that were refactored in the previous release series
+- Switched npm release management back to manual local publishing instead of GitHub-triggered automatic publication
+
+### Validation
+
+- Re-ran `python -m compileall -q app.py orca_viz tests`
+- Re-ran `python -m unittest discover -s tests`
+- Re-checked structure rendering and HTML viewer output for visible hydrogen atoms on light backgrounds
+- Verified the package metadata version alignment for Python and npm packaging
+
 ## [0.3.1] - 2026-03-22
 
 ### Changed

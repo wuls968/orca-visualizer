@@ -14,40 +14,37 @@ except ImportError:  # pragma: no cover - dependency is declared, but keep a saf
 from ..cube import CubeData, cube_grid_is_compatible, cube_kind_label, esp_signed_surface_levels
 from ..i18n import tr
 from ..plot_theme import (
-    ACCENT_BLUE,
-    ACCENT_GOLD,
-    ACCENT_RED,
-    ACCENT_TEAL,
+    ModelSizeSettings,
     apply_standard_2d_style,
     apply_standard_3d_style,
+    resolve_visual_style,
 )
-from .structure import _build_bond_pairs, _combined_bond_trace
+from .structure import (
+    _build_bond_pairs,
+    _combined_bond_trace,
+    _representation_bond_traces,
+    _resolved_model_size_settings,
+    _structure_atom_sizes,
+)
 
 
-ESP_COLOR_NEGATIVE = ACCENT_RED
-ESP_COLOR_POSITIVE = ACCENT_BLUE
-ORBITAL_COLOR_NEGATIVE = ACCENT_BLUE
-ORBITAL_COLOR_POSITIVE = ACCENT_GOLD
-SPIN_COLOR_NEGATIVE = ACCENT_BLUE
-SPIN_COLOR_POSITIVE = ACCENT_RED
-DENSITY_SURFACE_COLOR = ACCENT_TEAL
-ESP_SLICE_COLORSCALE = [
-    [0.00, "#9f1239"],
-    [0.18, "#ef4444"],
-    [0.50, "#fff7ed"],
-    [0.82, "#60a5fa"],
-    [1.00, "#1d4ed8"],
-]
-ORBITAL_SLICE_COLORSCALE = [
-    [0.00, "#1d4ed8"],
-    [0.20, "#60a5fa"],
-    [0.50, "#f8fafc"],
-    [0.80, "#fbbf24"],
-    [1.00, "#b45309"],
-]
+def _rgba(hex_color: str, alpha: float) -> str:
+    stripped = hex_color.lstrip("#")
+    if len(stripped) != 6:
+        return hex_color
+    red = int(stripped[0:2], 16)
+    green = int(stripped[2:4], 16)
+    blue = int(stripped[4:6], 16)
+    return f"rgba({red}, {green}, {blue}, {alpha:.3f})"
 
-
-def create_cube_slice_figure(cube: CubeData, axis: str = "z", index: int | None = None) -> go.Figure:
+def create_cube_slice_figure(
+    cube: CubeData,
+    axis: str = "z",
+    index: int | None = None,
+    *,
+    visual_style_key: str | None = None,
+) -> go.Figure:
+    visual_style = resolve_visual_style(visual_style_key)
     axis_map = {"x": 0, "y": 1, "z": 2}
     axis_id = axis_map[axis]
     if index is None:
@@ -64,7 +61,7 @@ def create_cube_slice_figure(cube: CubeData, axis: str = "z", index: int | None 
         plane = cube.values[:, :, index]
         x_title, y_title = "i", "j"
 
-    colorscale = _cube_slice_colorscale(cube_kind)
+    colorscale = _cube_slice_colorscale(cube_kind, visual_style_key=visual_style.key)
     z_mid = 0 if np.min(plane) < 0 < np.max(plane) else None
     colorbar_title = _cube_colorbar_title(cube_kind)
     figure = go.Figure(
@@ -90,6 +87,7 @@ def create_cube_slice_figure(cube: CubeData, axis: str = "z", index: int | None 
         yaxis_title=y_title,
         showlegend=False,
         margin={"l": 76, "r": 24, "t": 60, "b": 60},
+        visual_style_key=visual_style.key,
     )
     return figure
 
@@ -102,7 +100,12 @@ def create_cube_isosurface_figure(
     opacity: float | None = None,
     surface_mode: str = "default",
     surface_cube: CubeData | None = None,
+    structure_representation: str = "ball_stick",
+    model_size_settings: ModelSizeSettings | None = None,
+    visual_style_key: str | None = None,
 ) -> go.Figure:
+    visual_style = resolve_visual_style(visual_style_key)
+    palette = visual_style.palette
     cube_kind = cube.metadata.get("cube_kind", "generic")
     stride = _cube_stride(cube, max_points=_cube_render_budget(cube_kind, quality))
     sampled_values, sampled_origin, sampled_axes = _sampled_cube_volume(cube, stride=stride)
@@ -142,7 +145,7 @@ def create_cube_isosurface_figure(
                         name=tr("ESP on electron density surface"),
                         opacity=opacity if opacity is not None else 0.78,
                         intensity=esp_vertex_values,
-                        colorscale=ESP_SLICE_COLORSCALE,
+                        colorscale=_cube_slice_colorscale("esp", visual_style_key=visual_style.key),
                         cmin=-color_scale,
                         cmax=color_scale,
                         colorbar_title="ESP",
@@ -179,7 +182,7 @@ def create_cube_isosurface_figure(
                                 positive_mesh[1],
                                 name=tr("ESP > 0"),
                                 opacity=esp_opacity,
-                                color=ESP_COLOR_POSITIVE,
+                                color=palette["cube_esp_positive"],
                             )
                         )
                         focus_sets.append(positive_mesh[0])
@@ -192,7 +195,7 @@ def create_cube_isosurface_figure(
                             value_flat,
                             level=positive_level,
                             max_extent=min(positive_extent, positive_cap),
-                            color=ESP_COLOR_POSITIVE,
+                            color=palette["cube_esp_positive"],
                             name=tr("ESP > 0"),
                             opacity=esp_opacity,
                         )
@@ -213,7 +216,7 @@ def create_cube_isosurface_figure(
                                 negative_mesh[1],
                                 name=tr("ESP < 0"),
                                 opacity=esp_opacity,
-                                color=ESP_COLOR_NEGATIVE,
+                                color=palette["cube_esp_negative"],
                             )
                         )
                         focus_sets.append(negative_mesh[0])
@@ -226,7 +229,7 @@ def create_cube_isosurface_figure(
                             -value_flat,
                             level=negative_level,
                             max_extent=min(negative_extent, negative_cap),
-                            color=ESP_COLOR_NEGATIVE,
+                            color=palette["cube_esp_negative"],
                             name=tr("ESP < 0"),
                             opacity=esp_opacity,
                         )
@@ -244,8 +247,8 @@ def create_cube_isosurface_figure(
                     ys=ys,
                     zs=zs,
                     level=abs(level),
-                    positive_color=ORBITAL_COLOR_POSITIVE,
-                    negative_color=ORBITAL_COLOR_NEGATIVE,
+                    positive_color=palette["cube_orbital_positive"],
+                    negative_color=palette["cube_orbital_negative"],
                     positive_name=tr("phase +"),
                     negative_name=tr("phase -"),
                     opacity=orbital_opacity,
@@ -264,8 +267,8 @@ def create_cube_isosurface_figure(
                     ys=ys,
                     zs=zs,
                     level=abs(level),
-                    positive_color=SPIN_COLOR_POSITIVE,
-                    negative_color=SPIN_COLOR_NEGATIVE,
+                    positive_color=palette["cube_spin_positive"],
+                    negative_color=palette["cube_spin_negative"],
                     positive_name=tr("spin +"),
                     negative_name=tr("spin -"),
                     opacity=spin_opacity,
@@ -289,7 +292,7 @@ def create_cube_isosurface_figure(
                             mesh[1],
                             name=_cube_colorbar_title(cube_kind),
                             opacity=default_opacity,
-                            color=DENSITY_SURFACE_COLOR,
+                            color=palette["cube_density_surface"],
                         )
                     )
                     focus_sets.append(mesh[0])
@@ -303,7 +306,7 @@ def create_cube_isosurface_figure(
                         np.abs(value_flat),
                         level=abs(level),
                         max_extent=extent,
-                        color=DENSITY_SURFACE_COLOR,
+                        color=palette["cube_density_surface"],
                         name=_cube_colorbar_title(cube_kind),
                         opacity=default_opacity,
                     )
@@ -311,7 +314,13 @@ def create_cube_isosurface_figure(
                 focus_sets.append(_masked_points(np.abs(sampled_values) >= abs(level), xs, ys, zs))
 
     if show_structure and cube.atoms is not None and len(cube.atoms) > 0:
-        for trace in _subtle_structure_traces(cube.atoms, cube_kind):
+        for trace in _subtle_structure_traces(
+            cube.atoms,
+            cube_kind,
+            representation=structure_representation,
+            model_size_settings=model_size_settings,
+            visual_style_key=visual_style.key,
+        ):
             figure.add_trace(trace)
 
     title = _cube_isosurface_title(cube_kind, level, surface_mode=surface_mode)
@@ -321,6 +330,7 @@ def create_cube_isosurface_figure(
         camera=_cube_camera(focus_sets, cube.atoms),
         showlegend=cube_kind in {"esp", "orbital", "spin_density"},
         margin={"l": 0, "r": 0, "t": 56, "b": 0},
+        visual_style_key=visual_style.key,
     )
     scene_layout = figure.layout.scene.to_plotly_json()
     for axis_name, axis_payload in _cube_scene_ranges(focus_sets, cube.atoms).items():
@@ -373,15 +383,20 @@ def _use_mesh_render(quality: str) -> bool:
     return normalized_quality == "ultra" and marching_cubes is not None
 
 
-def _cube_slice_colorscale(cube_kind: str) -> list[list[float | str]] | str:
+def _cube_slice_colorscale(
+    cube_kind: str,
+    *,
+    visual_style_key: str | None = None,
+) -> list[list[float | str]] | str:
+    visual_style = resolve_visual_style(visual_style_key)
     if cube_kind == "esp":
-        return ESP_SLICE_COLORSCALE
+        return [[point, color] for point, color in visual_style.esp_slice_colorscale]
     if cube_kind == "orbital":
-        return ORBITAL_SLICE_COLORSCALE
+        return [[point, color] for point, color in visual_style.orbital_slice_colorscale]
     if cube_kind in {"electron_density", "density"}:
         return "Viridis"
     if cube_kind == "spin_density":
-        return "RdBu_r"
+        return visual_style.charge_colorscale
     return "RdBu"
 
 
@@ -678,13 +693,45 @@ def _masked_points(mask: np.ndarray, xs: np.ndarray, ys: np.ndarray, zs: np.ndar
     return np.column_stack([xs[mask.ravel()], ys[mask.ravel()], zs[mask.ravel()]])
 
 
-def _subtle_structure_traces(atoms: Atoms, cube_kind: str) -> list[go.Scatter3d]:
+def _subtle_structure_traces(
+    atoms: Atoms,
+    cube_kind: str,
+    *,
+    representation: str = "ball_stick",
+    model_size_settings: ModelSizeSettings | None = None,
+    visual_style_key: str | None = None,
+) -> list[go.Scatter3d]:
+    visual_style = resolve_visual_style(visual_style_key)
+    style = _resolved_model_size_settings(model_size_settings)
     positions = atoms.get_positions()
-    atom_sizes = [max(covalent_radii[number] * 9, 5.5) for number in atoms.get_atomic_numbers()]
-    atom_color = "rgba(71, 85, 105, 0.38)" if cube_kind in {"esp", "electron_density"} else "rgba(51, 65, 85, 0.54)"
-    bond_color = "rgba(100, 116, 139, 0.34)" if cube_kind in {"esp", "electron_density"} else "rgba(71, 85, 105, 0.52)"
-    bond_trace = _combined_bond_trace(atoms, _build_bond_pairs(atoms))
-    return [
+    atom_sizes = _structure_atom_sizes(
+        atoms.get_atomic_numbers(),
+        representation,
+        model_size_settings=style,
+    )
+    overlay_base = visual_style.palette["structure_overlay"]
+    atom_color = _rgba(overlay_base, 0.38 if cube_kind in {"esp", "electron_density"} else 0.54)
+    bond_color = _rgba(overlay_base, 0.34 if cube_kind in {"esp", "electron_density"} else 0.52)
+    traces: list[go.Scatter3d] = []
+    for bond_trace in _representation_bond_traces(
+        atoms,
+        representation=representation,
+        bond_pairs=_build_bond_pairs(atoms),
+        model_size_settings=style,
+        visual_style_key=visual_style.key,
+    ):
+        traces.append(
+            go.Scatter3d(
+                x=bond_trace.x,
+                y=bond_trace.y,
+                z=bond_trace.z,
+                mode="lines",
+                line={"color": bond_color, "width": max(1.8, float(bond_trace.line.width) * 0.76)},
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+    traces.append(
         go.Scatter3d(
             x=positions[:, 0],
             y=positions[:, 1],
@@ -693,21 +740,14 @@ def _subtle_structure_traces(atoms: Atoms, cube_kind: str) -> list[go.Scatter3d]
             marker={
                 "size": atom_sizes,
                 "color": atom_color,
-                "line": {"color": "rgba(15, 23, 42, 0.28)", "width": 0.8},
+                "line": {"color": _rgba(visual_style.palette["text_primary"], 0.28), "width": 0.8},
+                "opacity": 0.55 if representation == "space_filling" else 0.78,
             },
             hoverinfo="skip",
             showlegend=False,
-        ),
-        go.Scatter3d(
-            x=bond_trace.x,
-            y=bond_trace.y,
-            z=bond_trace.z,
-            mode="lines",
-            line={"color": bond_color, "width": 3.2},
-            hoverinfo="skip",
-            showlegend=False,
-        ),
-    ]
+        )
+    )
+    return traces
 
 
 def _cube_scene_ranges(surface_sets: list[np.ndarray], atoms: Atoms | None) -> dict[str, dict[str, list[float]]]:

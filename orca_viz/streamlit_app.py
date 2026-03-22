@@ -11,6 +11,8 @@ from orca_viz.ui import (
     render_cube_analysis,
     render_environment_doctor,
     render_gbw_analysis,
+    render_global_visual_style_controls,
+    render_global_structure_controls,
     render_orca_analysis,
     render_process_monitor,
     render_single_mode_empty_state,
@@ -68,6 +70,11 @@ def _render_sidebar() -> str:
 
         st.divider()
         if selected_mode in {"single", "batch"}:
+            st.divider()
+            st.subheader(tr("出图配色方案"))
+            render_global_visual_style_controls()
+
+        if selected_mode in {"single", "batch"}:
             st.markdown(
                 tr(
                     "支持文件：`out` `log` `txt` `xyz` `cube`\n\n单文件模式额外支持 `gbw`。\n\n批量模式可直接读取整个文件夹。"
@@ -83,19 +90,7 @@ def _render_sidebar() -> str:
         if selected_mode == "single":
             st.divider()
             st.subheader(tr("3D 视图"))
-            representation_options = [
-                tr("球棍"),
-                tr("空间填充"),
-                tr("棒状"),
-                tr("线框"),
-            ]
-            st.selectbox(
-                tr("分子模型"),
-                representation_options,
-                index=0,
-                key="global-structure-representation",
-            )
-            st.checkbox(tr("显示原子标签"), value=False, key="global-structure-labels")
+            render_global_structure_controls()
 
     return selected_mode
 

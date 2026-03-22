@@ -24,14 +24,25 @@ from ..visualization import (
     create_cube_slice_figure,
     create_structure_figure,
 )
-from .common import get_structure_view_settings, render_page_note, render_plotly_chart, slug_key
+from .common import (
+    get_structure_view_settings,
+    render_page_visual_style_override,
+    render_page_model_size_override,
+    render_page_note,
+    render_plotly_chart,
+    resolve_visual_style_key,
+    slug_key,
+)
 from .data import download_dataframe
 from .export_controls import render_figure_export_controls
 
 
 def render_cube_analysis(cube: CubeData, *, show_page_note: bool = True) -> None:
     base_key = slug_key(cube.source_name)
-    structure_representation, show_atom_labels = get_structure_view_settings()
+    render_page_visual_style_override(f"{base_key}-cube")
+    render_page_model_size_override(f"{base_key}-cube")
+    structure_representation, show_atom_labels, model_size_settings = get_structure_view_settings(f"{base_key}-cube")
+    visual_style_key = resolve_visual_style_key(f"{base_key}-cube")
     cube_kind = cube.metadata.get("cube_kind", "generic")
     cube_kind_name = cube.metadata.get("cube_kind_label", cube_kind_label(cube_kind))
     if show_page_note:
@@ -68,6 +79,8 @@ def render_cube_analysis(cube: CubeData, *, show_page_note: bool = True) -> None
                     cube.atoms,
                     representation=structure_representation,
                     show_atom_labels=show_atom_labels,
+                    model_size_settings=model_size_settings,
+                    visual_style_key=visual_style_key,
                 ),
                 key=f"{base_key}-cube-structure",
                 enable_scroll_zoom=True,
@@ -90,7 +103,12 @@ def render_cube_analysis(cube: CubeData, *, show_page_note: bool = True) -> None
             cube.grid_shape[axis_id] // 2,
             key=f"{base_key}-slice-index",
         )
-        slice_figure = create_cube_slice_figure(cube, axis=axis, index=index)
+        slice_figure = create_cube_slice_figure(
+            cube,
+            axis=axis,
+            index=index,
+            visual_style_key=visual_style_key,
+        )
         render_plotly_chart(
             slice_figure,
             key=f"{base_key}-cube-slice",
@@ -227,6 +245,9 @@ def render_cube_analysis(cube: CubeData, *, show_page_note: bool = True) -> None
             opacity=surface_opacity,
             surface_mode=esp_surface_mode,
             surface_cube=esp_surface_cube,
+            structure_representation=structure_representation,
+            model_size_settings=model_size_settings,
+            visual_style_key=visual_style_key,
         )
         render_plotly_chart(
             isosurface_figure,

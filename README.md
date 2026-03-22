@@ -291,21 +291,21 @@ When no manual path is provided, the detector searches:
 
 If ORCA is installed locally, this page is also the fastest way to confirm whether `orca`, `orca_plot`, and related tools are really callable by the app instead of only existing somewhere on disk.
 
-## Maintainer Note: npm Trusted Publishing
+## Maintainer Note: Manual npm Publishing
 
-The repository is prepared for npm Trusted Publishing from GitHub Actions.
+This repository now uses manual local npm publishing instead of GitHub-triggered publication.
 
-Workflow file:
+Recommended maintainer workflow:
 
-- `.github/workflows/publish-npm.yml`
+```bash
+npm version <new-version>
+npm pack --dry-run
+npm publish --access public
+```
 
-Trusted publisher settings on npm should point to:
+Then create and push the matching Git tag and GitHub release manually.
 
-- GitHub owner: `wuls968`
-- Repository: `orca-visualizer`
-- Workflow filename: `publish-npm.yml`
-
-Once the trusted publisher is configured on npm, publishing no longer depends on a long-lived `NPM_TOKEN` secret.
+This keeps npm publication under explicit local control and avoids accidental release-triggered publishes from CI.
 
 ## ORCA and GBW Notes
 

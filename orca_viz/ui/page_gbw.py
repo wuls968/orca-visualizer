@@ -140,11 +140,17 @@ def render_gbw_analysis(gbw_data: GbwData) -> None:
             (tr("最终能量 (Eh)"), "final_energy_hartree"),
             ("HOMO", "homo_index"),
             ("LUMO", "lumo_index"),
+            (tr("HOMO 能量 (Eh)"), "homo_energy_hartree"),
+            (tr("HOMO 能量 (eV)"), "homo_energy_ev"),
+            (tr("LUMO 能量 (Eh)"), "lumo_energy_hartree"),
+            (tr("LUMO 能量 (eV)"), "lumo_energy_ev"),
+            (tr("HOMO-LUMO gap (Eh)"), "homo_lumo_gap_hartree"),
+            (tr("HOMO-LUMO gap (eV)"), "homo_lumo_gap_ev"),
         ]:
             if key in property_summary:
                 value = property_summary[key]
                 if isinstance(value, float):
-                    value = f"{value:.8f}"
+                    value = f"{value:.8f}" if "hartree" in key or key.endswith("_eh") else f"{value:.4f}"
                 property_rows.append((label, value))
         if property_rows:
             st.subheader(tr("Property 摘要"))
@@ -155,6 +161,19 @@ def render_gbw_analysis(gbw_data: GbwData) -> None:
                         sources=", ".join(property_sources),
                     )
                 )
+            frontier_metrics = []
+            for label, key, digits in [
+                (tr("HOMO 能量 (eV)"), "homo_energy_ev", 3),
+                (tr("LUMO 能量 (eV)"), "lumo_energy_ev", 3),
+                (tr("HOMO-LUMO gap (eV)"), "homo_lumo_gap_ev", 3),
+            ]:
+                value = property_summary.get(key)
+                if isinstance(value, (int, float)):
+                    frontier_metrics.append((label, f"{float(value):.{digits}f}"))
+            if frontier_metrics:
+                metric_cols = st.columns(len(frontier_metrics))
+                for column, (label, value) in zip(metric_cols, frontier_metrics, strict=False):
+                    column.metric(label, value)
             st.dataframe(
                 pd.DataFrame(property_rows, columns=[tr("字段"), tr("值")]),
                 hide_index=True,
@@ -253,10 +272,10 @@ def render_gbw_analysis(gbw_data: GbwData) -> None:
         else:
             operator_label = st.selectbox(
                 tr("轨道算符"),
-                ["alpha / closed shell", "beta"],
+                [tr("alpha / closed shell"), tr("beta")],
                 key=f"{base_key}-gbw-operator",
             )
-            operator = 0 if operator_label == "alpha / closed shell" else 1
+            operator = 0 if operator_label == tr("alpha / closed shell") else 1
 
         requested_orbital = orbital_mode_options[orbital_mode]
         resolved_orbital_index: int | None = None
@@ -301,7 +320,10 @@ def render_gbw_analysis(gbw_data: GbwData) -> None:
             tr("Resolved orbital index"),
             tr("未解析到") if resolved_orbital_index is None else str(resolved_orbital_index),
         )
-        display_cols[2].metric(tr("Operator"), "alpha / closed shell" if operator == 0 else "beta")
+        display_cols[2].metric(
+            tr("Operator"),
+            tr("alpha / closed shell") if operator == 0 else tr("beta"),
+        )
         plot_kind = "molecular_orbital"
 
     if disabled_reason:

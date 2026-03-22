@@ -83,6 +83,51 @@ class OrcaRuntimeTests(unittest.TestCase):
 
             self.assertEqual(resolved, executable.resolve())
 
+    def test_resolve_orca_executable_can_find_sibling_tools_from_orca_binary(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            install_dir = Path(temp_dir) / "orca_install" / "bin"
+            install_dir.mkdir(parents=True)
+            orca = install_dir / _tool_file_name("orca")
+            orca_plot = install_dir / _tool_file_name("orca_plot")
+            _write_executable(orca)
+            _write_executable(orca_plot)
+
+            def fake_which(name: str) -> str | None:
+                if name in {"orca", "orca.exe", "orca.bat", "orca.cmd"}:
+                    return str(orca)
+                return None
+
+            with mock.patch.dict("os.environ", {"ORCA_HOME": "", "ORCA_ROOT": str(install_dir.parent)}, clear=False), mock.patch(
+                "orca_viz.orca_runtime.shutil.which",
+                side_effect=fake_which,
+            ), mock.patch(
+                "orca_viz.orca_runtime._load_login_shell_orca_env",
+                return_value={"ORCA_ROOT": str(install_dir.parent)},
+            ), mock.patch("orca_viz.orca_runtime._common_orca_directories", return_value=[]):
+                resolved = resolve_orca_executable("orca_plot")
+
+            self.assertEqual(resolved, orca_plot.resolve())
+
+    def test_file_hint_for_orca_binary_does_not_alias_other_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            install_dir = Path(temp_dir) / "orca_install"
+            install_dir.mkdir()
+            orca = install_dir / _tool_file_name("orca")
+            orca_plot = install_dir / _tool_file_name("orca_plot")
+            _write_executable(orca)
+            _write_executable(orca_plot)
+
+            with mock.patch.dict("os.environ", {"ORCA_HOME": ""}, clear=False), mock.patch(
+                "orca_viz.orca_runtime.shutil.which",
+                return_value=None,
+            ), mock.patch(
+                "orca_viz.orca_runtime._load_login_shell_orca_env",
+                return_value={},
+            ), mock.patch("orca_viz.orca_runtime._common_orca_directories", return_value=[]):
+                resolved = resolve_orca_executable("orca_plot", path_hint=str(orca))
+
+            self.assertEqual(resolved, orca_plot.resolve())
+
     def test_detect_orca_version_prefers_executable_output_then_falls_back_to_path(self) -> None:
         with mock.patch("orca_viz.orca_runtime.subprocess.run") as mocked_run:
             mocked_run.return_value = mock.Mock(

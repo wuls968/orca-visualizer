@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from io import StringIO
 from pathlib import Path
 import tempfile
@@ -8,14 +9,16 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
-from .. import load_gbw_file, parse_cube_file, parse_orca_content, parse_orca_file
+from .. import load_gbw_file, parse_cube_file, parse_orca_file
 from ..cube import CubeData
 from ..gbw import GbwData
 from ..i18n import tr
+from ..pathway import (
+    HARTREE_TO_KCAL_MOL,
+    PathwayResult,
+    build_path_display_dataframe,
+)
 from ..parser import OrcaParseResult
-
-
-HARTREE_TO_KCAL_MOL = 627.509474
 
 
 def normalize_gbw_sidecar_name(stem: str, upload_name: str) -> str | None:
@@ -44,20 +47,17 @@ def load_single_input(
 ) -> tuple[Any, str] | None:
     if uploaded_file is not None:
         suffix = Path(uploaded_file.name).suffix.lower()
-        if suffix in {".xyz", ".cube", ".gbw"}:
-            temp_dir = Path(tempfile.mkdtemp(prefix="orca_viz_input_"))
-            temp_path = temp_dir / uploaded_file.name
-            temp_path.write_bytes(uploaded_file.getbuffer())
-            if suffix == ".gbw":
-                for sidecar_upload in gbw_sidecar_uploads or []:
-                    target_name = normalize_gbw_sidecar_name(temp_path.stem, sidecar_upload.name)
-                    if target_name is None:
-                        continue
-                    sidecar_path = temp_dir / target_name
-                    sidecar_path.write_bytes(sidecar_upload.getbuffer())
-            return parse_path(temp_path, source_name=uploaded_file.name)
-        raw_text = uploaded_file.getvalue().decode("utf-8", errors="ignore")
-        return parse_orca_content(raw_text, source_name=uploaded_file.name), "orca"
+        temp_dir = Path(tempfile.mkdtemp(prefix="orca_viz_input_"))
+        temp_path = temp_dir / uploaded_file.name
+        temp_path.write_bytes(uploaded_file.getbuffer())
+        if suffix == ".gbw":
+            for sidecar_upload in gbw_sidecar_uploads or []:
+                target_name = normalize_gbw_sidecar_name(temp_path.stem, sidecar_upload.name)
+                if target_name is None:
+                    continue
+                sidecar_path = temp_dir / target_name
+                sidecar_path.write_bytes(sidecar_upload.getbuffer())
+        return parse_path(temp_path, source_name=uploaded_file.name)
 
     if local_path.strip():
         path = Path(local_path.strip()).expanduser()
@@ -81,7 +81,7 @@ def load_batch_inputs(uploaded_files: list[Any], folder_path: str) -> list[Any]:
         if not folder.exists() or not folder.is_dir():
             st.error(tr("文件夹不存在：{folder}", folder=folder))
             return items
-        patterns = ["*.out", "*.log", "*.txt", "*.xyz", "*.cube"]
+        patterns = ["*.out", "*.log", "*.txt", "*.xyz", "*.cube", "*.interp"]
         paths: list[Path] = []
         for pattern in patterns:
             paths.extend(folder.rglob(pattern))
@@ -97,19 +97,34 @@ def load_batch_inputs(uploaded_files: list[Any], folder_path: str) -> list[Any]:
 
 
 def parse_path(path: Path, source_name: str | None = None) -> tuple[Any, str]:
+    cached_item, cached_kind = _parse_path_cached(*_path_cache_key(path))
+    parsed_item = copy.deepcopy(cached_item)
+    if source_name and hasattr(parsed_item, "source_name"):
+        parsed_item.source_name = source_name
+    return parsed_item, cached_kind
+
+
+@st.cache_data(show_spinner=False)
+def _parse_path_cached(path_text: str, mtime_ns: int, size: int) -> tuple[Any, str]:
+    return _parse_path_uncached(Path(path_text))
+
+
+def _path_cache_key(path: Path) -> tuple[str, int, int]:
+    resolved = path.expanduser().resolve()
+    stat_result = resolved.stat()
+    return str(resolved), int(stat_result.st_mtime_ns), int(stat_result.st_size)
+
+
+def _parse_path_uncached(path: Path) -> tuple[Any, str]:
     suffix = path.suffix.lower()
     if suffix == ".cube":
         cube = parse_cube_file(path)
-        if source_name:
-            cube.source_name = source_name
         return cube, "cube"
     if suffix == ".gbw":
-        gbw = load_gbw_file(path, source_name=source_name)
+        gbw = load_gbw_file(path)
         return gbw, "gbw"
 
     result = parse_orca_file(path)
-    if source_name:
-        result.source_name = source_name
     return result, "orca"
 
 
@@ -119,13 +134,25 @@ def download_dataframe(label: str, dataframe: pd.DataFrame, file_name: str) -> N
     st.download_button(label=label, data=csv_buffer.getvalue(), file_name=file_name)
 
 
-def path_display_dataframe(dataframe: pd.DataFrame, x_col: str, y_col: str) -> pd.DataFrame:
-    display_df = dataframe.sort_values(x_col).reset_index(drop=True).copy()
-    minimum_energy = float(display_df[y_col].min())
-    display_df["relative_energy_kcal_mol"] = (
-        display_df[y_col].astype(float) - minimum_energy
-    ) * HARTREE_TO_KCAL_MOL
-    return display_df
+def path_display_dataframe(
+    dataframe: pd.DataFrame,
+    x_col: str,
+    y_col: str,
+    *,
+    kind: str = "trajectory",
+    reference_mode: str = "minimum",
+    reference_selector: str | int | float | None = None,
+) -> pd.DataFrame:
+    pathway = PathwayResult(kind=kind, points_df=dataframe)
+    display_df = build_path_display_dataframe(
+        pathway,
+        reference_mode=reference_mode,  # type: ignore[arg-type]
+        reference_selector=reference_selector,
+        energy_col=y_col,
+    )
+    if x_col in display_df.columns:
+        return display_df.sort_values(x_col, kind="mergesort").reset_index(drop=True)
+    return display_df.reset_index(drop=True)
 
 
 def localize_process_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:

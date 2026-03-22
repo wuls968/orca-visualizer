@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 from .exporting import (
+    available_video_formats,
     create_publication_ready_figure,
+    export_pathway_animation,
     export_plotly_figure,
+    normalized_animation_file_name,
     static_image_export_available,
+    video_export_available,
 )
 from .plots.charges import charge_extrema_dataframe, create_charge_3d_figure, create_charge_figure
 from .plots.cube import _cube_render_budget, create_cube_isosurface_figure, create_cube_slice_figure
@@ -18,14 +22,17 @@ from .plots.spectra import (
 )
 from .plots.structure import (
     atom_reference_dataframe,
+    build_pathway_animation_html,
     build_structure_viewer_html,
     build_vibration_mode_html,
     create_mode_magnitude_figure,
+    create_pathway_frame_figure,
     create_structure_figure,
     create_vibration_mode_figure,
     measure_atom_angle,
     measure_atom_dihedral,
     measure_atom_distance,
+    structure_scene_bounds,
     structure_summary,
     top_mode_atoms,
 )
@@ -44,7 +51,9 @@ STATIC_IMAGE_EXPORT_AVAILABLE = _LazyBooleanProxy()
 __all__ = [
     "STATIC_IMAGE_EXPORT_AVAILABLE",
     "_cube_render_budget",
+    "available_video_formats",
     "atom_reference_dataframe",
+    "build_pathway_animation_html",
     "build_structure_viewer_html",
     "build_vibration_mode_html",
     "charge_extrema_dataframe",
@@ -58,16 +67,21 @@ __all__ = [
     "create_frequency_figure",
     "create_mode_magnitude_figure",
     "create_path_figure",
+    "create_pathway_frame_figure",
     "create_publication_ready_figure",
     "create_structure_figure",
     "create_uv_vis_figure",
     "create_vibration_mode_figure",
     "create_vibrational_density_figure",
+    "export_pathway_animation",
     "export_plotly_figure",
     "measure_atom_angle",
     "measure_atom_dihedral",
     "measure_atom_distance",
+    "normalized_animation_file_name",
     "static_image_export_available",
+    "structure_scene_bounds",
     "structure_summary",
     "top_mode_atoms",
+    "video_export_available",
 ]

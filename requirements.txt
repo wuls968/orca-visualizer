@@ -1,7 +1,10 @@
 ase
+imageio
+imageio-ffmpeg
 kaleido<1
 numpy
 pandas
+Pillow
 plotly
 psutil
 scikit-image

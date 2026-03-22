@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import tomllib
 import unittest
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10 fallback
+    import tomli as tomllib
 
 from orca_viz import cli
 

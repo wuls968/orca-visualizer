@@ -6,16 +6,13 @@ import plotly.graph_objects as go
 
 from ..i18n import tr
 from ..plot_theme import (
-    ACCENT_BLUE,
-    ACCENT_RED,
-    ACCENT_RED_DARK,
-    ACCENT_TEAL,
-    ACCENT_TEAL_DARK,
-    ACCENT_VIOLET,
     apply_standard_2d_style,
+    resolve_visual_style,
 )
 
-def create_energy_figure(energies: list[float]) -> go.Figure:
+def create_energy_figure(energies: list[float], *, visual_style_key: str | None = None) -> go.Figure:
+    style = resolve_visual_style(visual_style_key)
+    palette = style.palette
     figure = go.Figure()
     if not energies:
         apply_standard_2d_style(
@@ -24,6 +21,7 @@ def create_energy_figure(energies: list[float]) -> go.Figure:
             xaxis_title=tr("优化/单点步骤"),
             yaxis_title=tr("能量 (Hartree)"),
             showlegend=False,
+            visual_style_key=style.key,
         )
         return figure
     figure.add_trace(
@@ -31,8 +29,12 @@ def create_energy_figure(energies: list[float]) -> go.Figure:
             x=list(range(1, len(energies) + 1)),
             y=energies,
             mode="lines+markers",
-            line={"color": ACCENT_TEAL_DARK, "width": 3.6},
-            marker={"size": 8.5, "color": ACCENT_TEAL, "line": {"color": "#ffffff", "width": 1.2}},
+            line={"color": palette["accent_secondary_dark"], "width": 3.6 * style.line_scale},
+            marker={
+                "size": 8.5 * style.marker_scale,
+                "color": palette["accent_secondary"],
+                "line": {"color": palette["bar_edge"], "width": 1.2},
+            },
             hovertemplate=f"{tr('步骤')} %{{x}}<br>{tr('能量 (Hartree)').replace(' (Hartree)', '')} %{{y:.8f}} Eh<extra></extra>",
         )
     )
@@ -43,19 +45,22 @@ def create_energy_figure(energies: list[float]) -> go.Figure:
         yaxis_title=tr("能量 (Hartree)"),
         showlegend=False,
         margin={"l": 72, "r": 18, "t": 58, "b": 60},
+        visual_style_key=style.key,
     )
     return figure
 
 
-def create_frequency_figure(frequencies: list[float]) -> go.Figure:
-    colors = [ACCENT_RED if value < 0 else ACCENT_BLUE for value in frequencies]
+def create_frequency_figure(frequencies: list[float], *, visual_style_key: str | None = None) -> go.Figure:
+    style = resolve_visual_style(visual_style_key)
+    palette = style.palette
+    colors = [palette["accent_positive"] if value < 0 else palette["accent_primary"] for value in frequencies]
     figure = go.Figure(
         data=[
             go.Bar(
                 x=list(range(1, len(frequencies) + 1)),
                 y=frequencies,
                 marker_color=colors,
-                marker_line={"color": "#ffffff", "width": 0.8},
+                marker_line={"color": palette["bar_edge"], "width": 0.8},
                 hovertemplate=f"{tr('模态')} %{{x}}<br>%{{y:.2f}} cm^-1<extra></extra>",
             )
         ]
@@ -67,17 +72,27 @@ def create_frequency_figure(frequencies: list[float]) -> go.Figure:
         yaxis_title=tr("频率 (cm^-1)"),
         showlegend=False,
         margin={"l": 72, "r": 18, "t": 58, "b": 60},
+        visual_style_key=style.key,
     )
     return figure
 
 
 def create_vibrational_density_figure(
-    frequencies: list[float], sigma_cm1: float = 25.0
+    frequencies: list[float], sigma_cm1: float = 25.0, *, visual_style_key: str | None = None
 ) -> go.Figure:
+    style = resolve_visual_style(visual_style_key)
+    palette = style.palette
     positive = [value for value in frequencies if value > 0]
     figure = go.Figure()
     if not positive:
-        figure.update_layout(template="plotly_white", title=tr("无可用于展宽的正频率"))
+        apply_standard_2d_style(
+            figure,
+            title=tr("无可用于展宽的正频率"),
+            xaxis_title=tr("频率 (cm^-1)"),
+            yaxis_title=tr("相对强度"),
+            showlegend=False,
+            visual_style_key=style.key,
+        )
         return figure
 
     x_grid = np.linspace(max(min(positive) - 200, 0), max(positive) + 200, 1200)
@@ -90,9 +105,9 @@ def create_vibrational_density_figure(
             x=x_grid,
             y=intensity,
             mode="lines",
-            line={"color": ACCENT_VIOLET, "width": 3.4},
+            line={"color": palette["accent_emphasis"], "width": 3.4 * style.line_scale},
             fill="tozeroy",
-            fillcolor="rgba(124, 58, 237, 0.12)",
+            fillcolor=_rgba(palette["accent_emphasis"], 0.14),
             hovertemplate=f"%{{x:.2f}} cm^-1<br>{tr('相对强度')} %{{y:.3f}}<extra></extra>",
         )
     )
@@ -103,10 +118,18 @@ def create_vibrational_density_figure(
         yaxis_title=tr("相对强度"),
         showlegend=False,
         margin={"l": 72, "r": 18, "t": 58, "b": 60},
+        visual_style_key=style.key,
     )
     return figure
 
-def create_uv_vis_figure(states: pd.DataFrame, sigma_ev: float = 0.12) -> go.Figure:
+def create_uv_vis_figure(
+    states: pd.DataFrame,
+    sigma_ev: float = 0.12,
+    *,
+    visual_style_key: str | None = None,
+) -> go.Figure:
+    style = resolve_visual_style(visual_style_key)
+    palette = style.palette
     figure = go.Figure()
     if states.empty:
         apply_standard_2d_style(
@@ -114,6 +137,7 @@ def create_uv_vis_figure(states: pd.DataFrame, sigma_ev: float = 0.12) -> go.Fig
             title=tr("未解析到 TDDFT 光谱"),
             xaxis_title=tr("跃迁能量 (eV)"),
             yaxis_title=tr("振子强度 / 相对吸收"),
+            visual_style_key=style.key,
         )
         return figure
 
@@ -129,9 +153,9 @@ def create_uv_vis_figure(states: pd.DataFrame, sigma_ev: float = 0.12) -> go.Fig
             x=x_grid,
             y=intensity,
             mode="lines",
-            line={"color": ACCENT_RED_DARK, "width": 3.6},
+            line={"color": palette["accent_positive"], "width": 3.6 * style.line_scale},
             fill="tozeroy",
-            fillcolor="rgba(159, 18, 57, 0.10)",
+            fillcolor=_rgba(palette["accent_positive"], 0.10),
             name=tr("展宽谱"),
             hovertemplate=f"%{{x:.3f}} eV<br>{tr('强度')} %{{y:.4f}}<extra></extra>",
         )
@@ -141,8 +165,8 @@ def create_uv_vis_figure(states: pd.DataFrame, sigma_ev: float = 0.12) -> go.Fig
             x=states["energy_eV"],
             y=states["oscillator_strength"],
             width=0.03,
-            marker_color=ACCENT_TEAL,
-            marker_line={"color": "#ffffff", "width": 0.6},
+            marker_color=palette["accent_secondary"],
+            marker_line={"color": palette["bar_edge"], "width": 0.6},
             opacity=0.62,
             name=tr("跃迁棒谱"),
             hovertemplate=(
@@ -159,21 +183,31 @@ def create_uv_vis_figure(states: pd.DataFrame, sigma_ev: float = 0.12) -> go.Fig
         yaxis_title=tr("振子强度 / 相对吸收"),
         barmode="overlay",
         margin={"l": 76, "r": 20, "t": 58, "b": 60},
+        visual_style_key=style.key,
     )
     return figure
 
-def create_batch_energy_figure(summary_df: pd.DataFrame) -> go.Figure:
+def create_batch_energy_figure(summary_df: pd.DataFrame, *, visual_style_key: str | None = None) -> go.Figure:
+    style = resolve_visual_style(visual_style_key)
+    palette = style.palette
     data = summary_df.dropna(subset=["total_energy_hartree"])
     figure = go.Figure()
     if data.empty:
-        figure.update_layout(template="plotly_white", title=tr("批量文件中无可比较能量"))
+        apply_standard_2d_style(
+            figure,
+            title=tr("批量文件中无可比较能量"),
+            xaxis_title=tr("文件"),
+            yaxis_title=tr("总能量 (Hartree)"),
+            showlegend=False,
+            visual_style_key=style.key,
+        )
         return figure
     figure.add_trace(
         go.Bar(
             x=data["file"],
             y=data["total_energy_hartree"],
-            marker_color=ACCENT_TEAL,
-            marker_line={"color": "#ffffff", "width": 0.8},
+            marker_color=palette["accent_secondary"],
+            marker_line={"color": palette["bar_edge"], "width": 0.8},
             hovertemplate="%{x}<br>%{y:.8f} Eh<extra></extra>",
         )
     )
@@ -184,22 +218,34 @@ def create_batch_energy_figure(summary_df: pd.DataFrame) -> go.Figure:
         yaxis_title=tr("总能量 (Hartree)"),
         showlegend=False,
         margin={"l": 76, "r": 20, "t": 58, "b": 96},
+        visual_style_key=style.key,
     )
     return figure
 
 
-def create_batch_excited_state_figure(summary_df: pd.DataFrame) -> go.Figure:
+def create_batch_excited_state_figure(
+    summary_df: pd.DataFrame, *, visual_style_key: str | None = None
+) -> go.Figure:
+    style = resolve_visual_style(visual_style_key)
+    palette = style.palette
     data = summary_df[summary_df["excited_states"].notna()]
     figure = go.Figure()
     if data.empty:
-        figure.update_layout(template="plotly_white", title=tr("批量文件中无 TDDFT 数据"))
+        apply_standard_2d_style(
+            figure,
+            title=tr("批量文件中无 TDDFT 数据"),
+            xaxis_title=tr("文件"),
+            yaxis_title=tr("激发态数"),
+            showlegend=False,
+            visual_style_key=style.key,
+        )
         return figure
     figure.add_trace(
         go.Bar(
             x=data["file"],
             y=data["excited_states"],
-            marker_color=ACCENT_RED,
-            marker_line={"color": "#ffffff", "width": 0.8},
+            marker_color=palette["accent_positive"],
+            marker_line={"color": palette["bar_edge"], "width": 0.8},
             hovertemplate=f"%{{x}}<br>{tr('激发态数')} %{{y}}<extra></extra>",
         )
     )
@@ -210,5 +256,16 @@ def create_batch_excited_state_figure(summary_df: pd.DataFrame) -> go.Figure:
         yaxis_title=tr("激发态数"),
         showlegend=False,
         margin={"l": 76, "r": 20, "t": 58, "b": 96},
+        visual_style_key=style.key,
     )
     return figure
+
+
+def _rgba(hex_color: str, alpha: float) -> str:
+    stripped = hex_color.lstrip("#")
+    if len(stripped) != 6:
+        return hex_color
+    red = int(stripped[0:2], 16)
+    green = int(stripped[2:4], 16)
+    blue = int(stripped[4:6], 16)
+    return f"rgba({red}, {green}, {blue}, {alpha:.3f})"

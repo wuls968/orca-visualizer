@@ -1,21 +1,28 @@
 from __future__ import annotations
 
+from io import BytesIO
 from dataclasses import dataclass
+import importlib.util
 from functools import lru_cache
 import math
+from pathlib import Path
+import tempfile
 from typing import Any
 
+import imageio.v2 as imageio
 import numpy as np
 import plotly.graph_objects as go
 import plotly.io as pio
+from PIL import Image
+
+from .pathway import PathwayResult, build_frame_point_mapping
+from .plots.pathways import create_path_figure
+from .plots.structure import create_pathway_frame_figure, structure_scene_bounds
 
 from .plot_theme import (
-    CHART_PAPER_BG,
-    PAPER_CAMERA,
-    SCIENTIFIC_FONT_FAMILY,
-    STRUCTURE_CAMERA,
-    TEXT_MUTED,
-    TEXT_PRIMARY,
+    ModelSizeSettings,
+    figure_visual_style_key,
+    resolve_visual_style,
     standard_3d_axis_layout,
     standard_export_margin,
 )
@@ -38,6 +45,17 @@ class ExportPreset:
     transparent_background: bool = False
 
 
+@dataclass(frozen=True)
+class AnimationExportPreset:
+    key: str
+    label: str
+    width: int
+    height: int
+    fps: int
+    scale: int
+    structure_fraction: float = 0.62
+
+
 EXPORT_PRESETS_2D: dict[str, ExportPreset] = {
     "paper": ExportPreset("paper", "Paper", 2200, 1400, 3, 18, 24),
     "presentation": ExportPreset("presentation", "Presentation", 1920, 1080, 2, 22, 30),
@@ -52,6 +70,12 @@ EXPORT_PRESETS_3D: dict[str, ExportPreset] = {
 
 # Backward-compatible alias for older imports; UI should use `export_presets_for_figure`.
 EXPORT_PRESETS = EXPORT_PRESETS_2D
+
+ANIMATION_EXPORT_PRESETS: dict[str, AnimationExportPreset] = {
+    "paper": AnimationExportPreset("paper", "Paper", 2400, 1400, 12, 2, 0.64),
+    "presentation": AnimationExportPreset("presentation", "Presentation", 1920, 1080, 16, 2, 0.62),
+    "web": AnimationExportPreset("web", "Web Preview", 1440, 900, 10, 1, 0.60),
+}
 
 
 def is_3d_figure(figure: go.Figure) -> bool:
@@ -93,6 +117,28 @@ def normalized_export_file_name(
     return f"{'_'.join(part for part in parts if part)}.{suffix}"
 
 
+def normalized_animation_file_name(file_stem: str, preset_key: str, video_format: str) -> str:
+    suffix = video_format.lower().lstrip(".")
+    return f"{_slug_segment(file_stem)}_path_{_slug_segment(preset_key)}.{suffix}"
+
+
+def animation_export_preset(key: str) -> AnimationExportPreset:
+    return ANIMATION_EXPORT_PRESETS.get(key, ANIMATION_EXPORT_PRESETS["paper"])
+
+
+def video_export_available(video_format: str) -> bool:
+    normalized = video_format.strip().lower()
+    if normalized == "gif":
+        return static_image_export_available()
+    if normalized == "mp4":
+        return static_image_export_available() and importlib.util.find_spec("imageio_ffmpeg") is not None
+    return False
+
+
+def available_video_formats() -> list[str]:
+    return [video_format for video_format in ["gif", "mp4"] if video_export_available(video_format)]
+
+
 def apply_export_preset(
     figure: go.Figure,
     *,
@@ -108,6 +154,7 @@ def apply_export_preset(
     hide_legend: bool = False,
     hide_colorbar: bool = False,
     margin_mode: str = "balanced",
+    visual_style_key: str | None = None,
 ) -> go.Figure:
     return prepare_export_figure(
         figure,
@@ -123,6 +170,7 @@ def apply_export_preset(
         hide_legend=hide_legend,
         hide_colorbar=hide_colorbar,
         margin_mode=margin_mode,
+        visual_style_key=visual_style_key,
     )
 
 
@@ -141,14 +189,17 @@ def prepare_export_figure(
     hide_legend: bool = False,
     hide_colorbar: bool = False,
     margin_mode: str = "balanced",
+    visual_style_key: str | None = None,
 ) -> go.Figure:
     export_figure = go.Figure(figure)
     three_d = is_3d_figure(export_figure)
     preset = export_preset(preset_key, is_3d=three_d)
+    resolved_style_key = visual_style_key or figure_visual_style_key(export_figure)
+    visual_style = resolve_visual_style(resolved_style_key)
     bg_color = (
         "rgba(0,0,0,0)"
         if (transparent_background if transparent_background is not None else preset.transparent_background)
-        else CHART_PAPER_BG
+        else visual_style.palette["paper_bg"]
     )
     resolved_width = width or preset.width
     resolved_height = height or preset.height
@@ -173,10 +224,15 @@ def prepare_export_figure(
             title_size=title_size or preset.title_size,
             background_color=bg_color,
             margin_mode=margin_mode,
+            visual_style_key=visual_style.key,
         )
     elif margin_mode == "tight":
         export_figure.update_layout(
-            margin=standard_export_margin(is_3d=three_d, crop_mode="tight"),
+            margin=standard_export_margin(
+                is_3d=three_d,
+                crop_mode="tight",
+                visual_style_key=visual_style.key,
+            ),
         )
 
     if three_d:
@@ -185,6 +241,7 @@ def prepare_export_figure(
             export_figure,
             show_axes=not hide_axes,
             background_color=bg_color,
+            visual_style_key=visual_style.key,
         )
     elif hide_axes:
         export_figure.update_xaxes(visible=False, showgrid=False, zeroline=False, title_text=None)
@@ -210,6 +267,7 @@ def export_plotly_figure(
     hide_legend: bool = False,
     hide_colorbar: bool = False,
     margin_mode: str = "balanced",
+    visual_style_key: str | None = None,
 ) -> bytes:
     if image_format.lower() == "html":
         return export_plotly_html(
@@ -226,6 +284,7 @@ def export_plotly_figure(
             hide_legend=hide_legend,
             hide_colorbar=hide_colorbar,
             margin_mode=margin_mode,
+            visual_style_key=visual_style_key,
         )
 
     if not static_image_export_available():
@@ -246,6 +305,7 @@ def export_plotly_figure(
         hide_legend=hide_legend,
         hide_colorbar=hide_colorbar,
         margin_mode=margin_mode,
+        visual_style_key=visual_style_key,
     )
     return pio.to_image(
         export_figure,
@@ -271,6 +331,7 @@ def export_plotly_html(
     hide_legend: bool = False,
     hide_colorbar: bool = False,
     margin_mode: str = "balanced",
+    visual_style_key: str | None = None,
 ) -> bytes:
     export_figure = prepare_export_figure(
         figure,
@@ -286,6 +347,7 @@ def export_plotly_html(
         hide_legend=hide_legend,
         hide_colorbar=hide_colorbar,
         margin_mode=margin_mode,
+        visual_style_key=visual_style_key,
     )
     html = pio.to_html(
         export_figure,
@@ -300,6 +362,128 @@ def create_publication_ready_figure(figure: go.Figure) -> go.Figure:
     return prepare_export_figure(figure, preset_key="paper", profile_key="paper")
 
 
+def export_pathway_animation(
+    pathway: PathwayResult,
+    *,
+    display_df: Any,
+    path_x_col: str,
+    path_y_col: str,
+    path_title: str,
+    path_x_label: str,
+    path_y_label: str,
+    y_hover_format: str,
+    y_suffix: str,
+    representation: str = "ball_stick",
+    show_atom_labels: bool = False,
+    show_axes: bool = False,
+    show_frame_number: bool = True,
+    show_path_plot: bool = True,
+    preset_key: str = "paper",
+    video_format: str = "gif",
+    width: int | None = None,
+    height: int | None = None,
+    fps: int | None = None,
+    scale: int | None = None,
+    background_mode: str = "white",
+    camera_mode: str = "fixed_all_frames",
+    model_size_settings: ModelSizeSettings | None = None,
+    visual_style_key: str | None = None,
+) -> bytes:
+    if not pathway.frames:
+        raise ValueError("Pathway animation export requires structural frames.")
+    normalized_format = video_format.strip().lower()
+    if not video_export_available(normalized_format):
+        raise RuntimeError(f"Video export backend for `{normalized_format}` is unavailable.")
+
+    visual_style = resolve_visual_style(visual_style_key)
+    preset = animation_export_preset(preset_key)
+    resolved_width = int(width or preset.width)
+    resolved_height = int(height or preset.height)
+    resolved_fps = int(fps or preset.fps)
+    resolved_scale = int(scale or preset.scale)
+    include_path_plot = bool(show_path_plot and display_df is not None and not getattr(display_df, "empty", True))
+    frame_to_point, _ = build_frame_point_mapping(pathway)
+    background_is_transparent = background_mode == "transparent" and normalized_format == "gif"
+    global_bounds = structure_scene_bounds(
+        [frame.atoms for frame in pathway.frames],
+        camera=visual_style.cameras["paper"] if camera_mode == "paper_default" else visual_style.cameras["structure"],
+    )
+
+    structure_width = resolved_width
+    path_width = 0
+    if include_path_plot:
+        structure_width = int(resolved_width * preset.structure_fraction)
+        path_width = resolved_width - structure_width
+
+    with tempfile.TemporaryDirectory(prefix="orca_viz_animation_") as temp_dir:
+        output_path = Path(temp_dir) / f"path_animation.{normalized_format}"
+        writer = _open_animation_writer(
+            output_path,
+            video_format=normalized_format,
+            fps=resolved_fps,
+        )
+        try:
+            for frame_index, frame in enumerate(pathway.frames):
+                bounds = (
+                    global_bounds
+                    if camera_mode in {"fixed_all_frames", "paper_default"}
+                    else structure_scene_bounds([frame.atoms], camera=visual_style.cameras["structure"])
+                )
+                frame_label = f"Frame {frame_index + 1}/{len(pathway.frames)}" if show_frame_number else None
+                structure_figure = create_pathway_frame_figure(
+                    frame.atoms,
+                    representation=representation,
+                    show_atom_labels=show_atom_labels,
+                    model_size_settings=model_size_settings,
+                    bounds=bounds,
+                    show_axes=show_axes,
+                    frame_label=frame_label,
+                    camera=bounds.get("camera"),  # type: ignore[arg-type]
+                    visual_style_key=visual_style.key,
+                )
+                structure_image = _export_figure_to_pil(
+                    structure_figure,
+                    width=structure_width,
+                    height=resolved_height,
+                    scale=resolved_scale,
+                    background_is_transparent=background_is_transparent,
+                )
+
+                composed = structure_image
+                if include_path_plot:
+                    highlight_index = frame_to_point[frame_index] if frame_index < len(frame_to_point) else None
+                    path_figure = create_path_figure(
+                        display_df,
+                        path_x_col,
+                        path_y_col,
+                        path_title,
+                        path_x_label,
+                        y_label=path_y_label,
+                        y_hover_format=y_hover_format,
+                        y_suffix=y_suffix,
+                        highlight_index=highlight_index,
+                        visual_style_key=visual_style.key,
+                    )
+                    path_image = _export_figure_to_pil(
+                        path_figure,
+                        width=path_width,
+                        height=resolved_height,
+                        scale=resolved_scale,
+                        background_is_transparent=background_is_transparent,
+                    )
+                    composed = _compose_animation_frame(
+                        structure_image,
+                        path_image,
+                        width=resolved_width * resolved_scale,
+                        height=resolved_height * resolved_scale,
+                        background_is_transparent=background_is_transparent,
+                    )
+                writer.append_data(_image_to_ndarray(composed, transparent=background_is_transparent))
+        finally:
+            writer.close()
+        return output_path.read_bytes()
+
+
 @lru_cache(maxsize=1)
 def static_image_export_available() -> bool:
     try:
@@ -310,6 +494,66 @@ def static_image_export_available() -> bool:
     return True
 
 
+def _export_figure_to_pil(
+    figure: go.Figure,
+    *,
+    width: int,
+    height: int,
+    scale: int,
+    background_is_transparent: bool,
+) -> Image.Image:
+    image_bytes = export_plotly_figure(
+        figure,
+        image_format="png",
+        width=width,
+        height=height,
+        scale=scale,
+        preset_key="paper",
+        profile_key="faithful",
+        transparent_background=background_is_transparent,
+    )
+    image = Image.open(BytesIO(image_bytes))
+    return image.convert("RGBA")
+
+
+def _compose_animation_frame(
+    structure_image: Image.Image,
+    path_image: Image.Image,
+    *,
+    width: int,
+    height: int,
+    background_is_transparent: bool,
+) -> Image.Image:
+    background = (255, 255, 255, 0 if background_is_transparent else 255)
+    canvas = Image.new("RGBA", (width, height), background)
+    canvas.alpha_composite(structure_image)
+    canvas.alpha_composite(path_image, dest=(width - path_image.width, 0))
+    return canvas
+
+
+def _image_to_ndarray(image: Image.Image, *, transparent: bool) -> np.ndarray:
+    if transparent:
+        return np.asarray(image.convert("RGBA"))
+    rgb_image = Image.new("RGB", image.size, (255, 255, 255))
+    rgb_image.paste(image, mask=image.split()[-1] if image.mode == "RGBA" else None)
+    return np.asarray(rgb_image)
+
+
+def _open_animation_writer(output_path: Path, *, video_format: str, fps: int):
+    if video_format == "gif":
+        return imageio.get_writer(output_path, format="GIF", mode="I", duration=1 / max(fps, 1), loop=0)
+    if video_format == "mp4":
+        return imageio.get_writer(
+            output_path,
+            format="FFMPEG",
+            mode="I",
+            fps=max(fps, 1),
+            codec="libx264",
+            macro_block_size=None,
+        )
+    raise ValueError(f"Unsupported animation format: {video_format}")
+
+
 def _apply_paper_layout(
     figure: go.Figure,
     *,
@@ -318,21 +562,27 @@ def _apply_paper_layout(
     title_size: int,
     background_color: str,
     margin_mode: str,
+    visual_style_key: str | None = None,
 ) -> None:
+    visual_style = resolve_visual_style(visual_style_key or figure_visual_style_key(figure))
     figure.update_layout(
         font={
-            "family": SCIENTIFIC_FONT_FAMILY,
+            "family": visual_style.font_family,
             "size": font_size,
-            "color": TEXT_PRIMARY,
+            "color": visual_style.palette["text_primary"],
         },
         title={
             "font": {
-                "family": SCIENTIFIC_FONT_FAMILY,
+                "family": visual_style.font_family,
                 "size": title_size,
-                "color": TEXT_PRIMARY,
+                "color": visual_style.palette["text_primary"],
             }
         },
-        margin=standard_export_margin(is_3d=is_3d, crop_mode=margin_mode),
+        margin=standard_export_margin(
+            is_3d=is_3d,
+            crop_mode=margin_mode,
+            visual_style_key=visual_style.key,
+        ),
     )
     if is_3d:
         scene = figure.layout.scene.to_plotly_json() if figure.layout.scene else {}
@@ -341,12 +591,12 @@ def _apply_paper_layout(
         figure.update_layout(scene=scene)
     else:
         figure.update_xaxes(
-            title_font={"size": font_size + 1, "color": TEXT_PRIMARY},
-            tickfont={"size": max(font_size - 1, 10), "color": TEXT_MUTED},
+            title_font={"size": font_size + 1, "color": visual_style.palette["text_primary"]},
+            tickfont={"size": max(font_size - 1, 10), "color": visual_style.palette["text_muted"]},
         )
         figure.update_yaxes(
-            title_font={"size": font_size + 1, "color": TEXT_PRIMARY},
-            tickfont={"size": max(font_size - 1, 10), "color": TEXT_MUTED},
+            title_font={"size": font_size + 1, "color": visual_style.palette["text_primary"]},
+            tickfont={"size": max(font_size - 1, 10), "color": visual_style.palette["text_muted"]},
         )
 
 
@@ -355,9 +605,14 @@ def _apply_3d_axis_visibility(
     *,
     show_axes: bool,
     background_color: str,
+    visual_style_key: str | None = None,
 ) -> None:
     scene = figure.layout.scene.to_plotly_json() if figure.layout.scene else {}
-    axis_defaults = standard_3d_axis_layout(show_axes=show_axes, background_color=background_color)
+    axis_defaults = standard_3d_axis_layout(
+        show_axes=show_axes,
+        background_color=background_color,
+        visual_style_key=visual_style_key or figure_visual_style_key(figure),
+    )
     for axis_name in ("xaxis", "yaxis", "zaxis"):
         existing_axis = scene.get(axis_name, {})
         merged_axis = {**axis_defaults[axis_name], **existing_axis}
@@ -390,13 +645,14 @@ def _apply_3d_view_mode(figure: go.Figure, *, view_mode: str) -> None:
     if normalized == "current":
         return
 
+    visual_style = resolve_visual_style(figure_visual_style_key(figure))
     scene = figure.layout.scene.to_plotly_json() if figure.layout.scene else {}
     if normalized == "paper_default":
         points = _figure_3d_focus_points(figure, focus="all")
         if points is not None:
-            _apply_scene_fit(scene, points, camera=PAPER_CAMERA)
+            _apply_scene_fit(scene, points, camera=visual_style.cameras["paper"])
         else:
-            scene["camera"] = PAPER_CAMERA
+            scene["camera"] = visual_style.cameras["paper"]
         figure.update_layout(scene=scene)
         return
 

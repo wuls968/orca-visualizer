@@ -10,13 +10,26 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from ase import Atoms
-from ase.data import chemical_symbols, covalent_radii, vdw_radii
+from ase.data import covalent_radii, vdw_radii
 from ase.data.colors import jmol_colors
 from ase.neighborlist import NeighborList, natural_cutoffs
 from plotly.offline import get_plotlyjs
+from plotly.utils import PlotlyJSONEncoder
 
 from ..i18n import tr
-from ..plot_theme import ACCENT_ORANGE, STRUCTURE_CAMERA, apply_standard_2d_style, apply_standard_3d_style
+from ..pathway import PathwayResult, build_frame_point_mapping
+from ..plot_theme import (
+    ACCENT_ORANGE,
+    ModelSizeSettings,
+    PAPER_CAMERA,
+    STRUCTURE_CAMERA,
+    apply_standard_2d_style,
+    apply_standard_3d_style,
+    model_size_preset,
+    resolve_visual_style,
+    standard_3d_axis_layout,
+)
+from .pathways import create_path_figure
 
 PLOTLY_JS_BUNDLE = get_plotlyjs()
 
@@ -27,29 +40,50 @@ def _embedded_3dmol_script() -> str:
     return script_text.replace("</script", "<\\/script")
 
 
+def _rgba(hex_color: str, alpha: float) -> str:
+    stripped = hex_color.lstrip("#")
+    if len(stripped) != 6:
+        return hex_color
+    red = int(stripped[0:2], 16)
+    green = int(stripped[2:4], 16)
+    blue = int(stripped[4:6], 16)
+    return f"rgba({red}, {green}, {blue}, {alpha:.3f})"
+
+
 def create_structure_figure(
     atoms: Atoms,
     representation: str = "ball_stick",
     show_atom_labels: bool = False,
     measurement_atoms: dict[str, list[int]] | None = None,
+    model_size_settings: ModelSizeSettings | None = None,
+    visual_style_key: str | None = None,
 ) -> go.Figure:
+    visual_style = resolve_visual_style(visual_style_key)
     figure = go.Figure()
-    for trace in _representation_bond_traces(atoms, representation=representation):
+    for trace in _representation_bond_traces(
+        atoms,
+        representation=representation,
+        model_size_settings=model_size_settings,
+        visual_style_key=visual_style.key,
+    ):
         figure.add_trace(trace)
-    for trace in _measurement_traces(atoms, measurement_atoms):
+    for trace in _measurement_traces(atoms, measurement_atoms, visual_style_key=visual_style.key):
         figure.add_trace(trace)
     for trace in _structure_traces(
         atoms,
         representation=representation,
         show_labels=show_atom_labels,
+        model_size_settings=model_size_settings,
+        visual_style_key=visual_style.key,
     ):
         figure.add_trace(trace)
 
     apply_standard_3d_style(
         figure,
-        camera=STRUCTURE_CAMERA,
+        camera=visual_style.cameras["structure"],
         showlegend=False,
         margin={"l": 0, "r": 0, "t": 36, "b": 0},
+        visual_style_key=visual_style.key,
     )
     figure.update_layout(
         clickmode="event+select",
@@ -63,13 +97,493 @@ def create_structure_figure(
     return figure
 
 
+def create_pathway_frame_figure(
+    atoms: Atoms,
+    *,
+    representation: str = "ball_stick",
+    show_atom_labels: bool = False,
+    model_size_settings: ModelSizeSettings | None = None,
+    bounds: dict[str, list[list[float]] | dict[str, Any]] | None = None,
+    show_axes: bool = False,
+    frame_label: str | None = None,
+    camera: dict[str, Any] | None = None,
+    visual_style_key: str | None = None,
+) -> go.Figure:
+    visual_style = resolve_visual_style(visual_style_key)
+    figure = create_structure_figure(
+        atoms,
+        representation=representation,
+        show_atom_labels=show_atom_labels,
+        model_size_settings=model_size_settings,
+        visual_style_key=visual_style.key,
+    )
+    scene = figure.layout.scene.to_plotly_json() if figure.layout.scene else {}
+    if bounds is None:
+        bounds = structure_scene_bounds([atoms])
+    scene.update(standard_3d_axis_layout(show_axes=show_axes, visual_style_key=visual_style.key))
+    scene["camera"] = camera or bounds.get("camera", visual_style.cameras["structure"])
+    for axis_name, axis_range in zip(["xaxis", "yaxis", "zaxis"], bounds["ranges"], strict=False):
+        scene.setdefault(axis_name, {})
+        scene[axis_name]["range"] = axis_range
+    figure.update_layout(
+        scene=scene,
+        margin={"l": 0, "r": 0, "t": 16 if not frame_label else 34, "b": 0},
+        showlegend=False,
+        title={"text": ""},
+        annotations=(
+            [
+                {
+                    "text": frame_label,
+                    "xref": "paper",
+                    "yref": "paper",
+                    "x": 0.01,
+                    "y": 0.99,
+                    "showarrow": False,
+                    "align": "left",
+                    "font": {"size": 16, "color": visual_style.palette["annotation_text"]},
+                    "bgcolor": visual_style.palette["annotation_bg"],
+                    "bordercolor": visual_style.palette["annotation_border"],
+                    "borderwidth": 1,
+                    "borderpad": 5,
+                }
+            ]
+            if frame_label
+            else []
+        ),
+    )
+    return figure
+
+
+def structure_scene_bounds(
+    atoms_or_frames: list[Atoms],
+    *,
+    padding_ratio: float = 0.18,
+    min_padding: float = 0.55,
+    camera: dict[str, Any] | None = None,
+) -> dict[str, list[list[float]] | dict[str, Any]]:
+    if not atoms_or_frames:
+        return {
+            "ranges": [[-2.0, 2.0], [-2.0, 2.0], [-2.0, 2.0]],
+            "camera": camera or STRUCTURE_CAMERA,
+        }
+    all_positions = np.vstack([atoms.get_positions() for atoms in atoms_or_frames])
+    mins = np.min(all_positions, axis=0)
+    maxs = np.max(all_positions, axis=0)
+    spans = np.maximum(maxs - mins, 0.4)
+    max_span = float(np.max(spans))
+    padding = max(min_padding, max_span * padding_ratio)
+    ranges: list[list[float]] = []
+    for axis_min, axis_max in zip(mins, maxs, strict=False):
+        center = float((axis_min + axis_max) / 2.0)
+        half_span = float((axis_max - axis_min) / 2.0 + padding)
+        ranges.append([center - half_span, center + half_span])
+    return {
+        "ranges": ranges,
+        "camera": camera or (PAPER_CAMERA if max_span > 8.0 else STRUCTURE_CAMERA),
+    }
+
+
+def build_pathway_animation_html(
+    pathway: PathwayResult,
+    *,
+    display_df: pd.DataFrame,
+    path_x_col: str,
+    path_y_col: str,
+    path_title: str,
+    path_x_label: str,
+    path_y_label: str,
+    y_hover_format: str,
+    y_suffix: str,
+    representation: str = "ball_stick",
+    show_atom_labels: bool = False,
+    model_size_settings: ModelSizeSettings | None = None,
+    show_axes: bool = False,
+    default_camera_mode: str = "fixed_all_frames",
+    component_id: str = "pathway-animation",
+    visual_style_key: str | None = None,
+) -> str:
+    if not pathway.frames:
+        raise ValueError("Pathway animation requires at least one structural frame.")
+
+    visual_style = resolve_visual_style(visual_style_key)
+    palette = visual_style.palette
+    total_frames = len(pathway.frames)
+    global_bounds = structure_scene_bounds(
+        [frame.atoms for frame in pathway.frames],
+        camera=visual_style.cameras["paper"],
+    )
+    frame_to_point, point_to_frame = build_frame_point_mapping(pathway)
+
+    structure_frames: list[dict[str, Any]] = []
+    for frame_index, frame in enumerate(pathway.frames):
+        frame_bounds = (
+            global_bounds
+            if default_camera_mode == "fixed_all_frames"
+            else structure_scene_bounds([frame.atoms], camera=visual_style.cameras["structure"])
+        )
+        label = tr("帧 {current}/{total}", current=frame_index + 1, total=total_frames)
+        frame_figure = create_pathway_frame_figure(
+            frame.atoms,
+            representation=representation,
+            show_atom_labels=show_atom_labels,
+            model_size_settings=model_size_settings,
+            bounds=frame_bounds,
+            show_axes=show_axes,
+            frame_label=label,
+            camera=frame_bounds.get("camera"),  # type: ignore[arg-type]
+            visual_style_key=visual_style.key,
+        )
+        structure_frames.append(
+            {
+                "data": [trace.to_plotly_json() for trace in frame_figure.data],
+                "layout": frame_figure.layout.to_plotly_json(),
+            }
+        )
+
+    path_payload: dict[str, Any] | None = None
+    if not display_df.empty:
+        plot_data = display_df.sort_values(path_x_col, kind="mergesort").reset_index(drop=True).copy()
+        plot_data["_point_index"] = plot_data.index
+        point_positions = {
+            int(row["_point_index"]): {
+                "x": row[path_x_col],
+                "y": row[path_y_col],
+                "label": row.get("label", row["_point_index"]),
+            }
+            for _, row in plot_data.iterrows()
+            if pd.notna(row.get(path_x_col)) and pd.notna(row.get(path_y_col))
+        }
+        initial_highlight = next((value for value in frame_to_point if value is not None), 0)
+        path_figure = create_path_figure(
+            display_df,
+            path_x_col,
+            path_y_col,
+            path_title,
+            path_x_label,
+            y_label=path_y_label,
+            y_hover_format=y_hover_format,
+            y_suffix=y_suffix,
+            highlight_index=initial_highlight,
+            visual_style_key=visual_style.key,
+        )
+        path_payload = {
+            "figure": path_figure.to_plotly_json(),
+            "highlight_trace_index": len(path_figure.data) - 1 if path_figure.data else None,
+            "points": point_positions,
+        }
+
+    payload = {
+        "component_id": component_id,
+        "frame_count": total_frames,
+        "default_camera_mode": default_camera_mode,
+        "show_path_plot": bool(path_payload),
+        "structure_frames": structure_frames,
+        "global_ranges": global_bounds["ranges"],
+        "default_camera": global_bounds["camera"],
+        "frame_to_point": frame_to_point,
+        "point_to_frame": {str(key): value for key, value in point_to_frame.items()},
+        "path_payload": path_payload,
+        "default_frame_duration_ms": 120,
+        "speed_options": [
+            {"label": "0.5x", "value": 0.5},
+            {"label": "1.0x", "value": 1.0},
+            {"label": "1.5x", "value": 1.5},
+            {"label": "2.0x", "value": 2.0},
+            {"label": "4.0x", "value": 4.0},
+        ],
+        "text": {
+            "play": tr("播放"),
+            "pause": tr("暂停"),
+            "previous": tr("上一帧"),
+            "next": tr("下一帧"),
+            "speed": tr("播放速度"),
+            "camera_mode": tr("视角模式"),
+            "fixed_all_frames": tr("固定视角（全路径）"),
+            "fit_current_frame": tr("逐帧适配"),
+            "frame_status": tr("当前帧"),
+            "path_status": tr("路径联动"),
+            "path_status_enabled": tr("点击路径点可跳转到对应帧。"),
+        },
+    }
+
+    payload_json = json.dumps(payload, ensure_ascii=False, cls=PlotlyJSONEncoder)
+    return f"""
+<div class="orca-path-animation-root">
+  <div class="orca-path-animation-toolbar">
+    <button type="button" id="{component_id}-prev"></button>
+    <button type="button" id="{component_id}-toggle"></button>
+    <button type="button" id="{component_id}-next"></button>
+    <input id="{component_id}-slider" type="range" min="0" max="{total_frames - 1}" value="0" step="1" />
+    <span id="{component_id}-status"></span>
+    <label>
+      <span id="{component_id}-speed-label"></span>
+      <select id="{component_id}-speed"></select>
+    </label>
+    <label>
+      <span id="{component_id}-camera-label"></span>
+      <select id="{component_id}-camera-mode"></select>
+    </label>
+  </div>
+  <div class="orca-path-animation-grid {'with-path' if path_payload else 'without-path'}">
+    <div id="{component_id}-structure" class="orca-path-structure-panel"></div>
+    <div id="{component_id}-path" class="orca-path-curve-panel"></div>
+  </div>
+  <div class="orca-path-animation-footnote">{tr("点击路径点可跳转到对应帧。") if path_payload else ""}</div>
+</div>
+<style>
+  .orca-path-animation-root {{
+    width: 100%;
+    color: {palette["text_primary"]};
+  }}
+  .orca-path-animation-toolbar {{
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    margin-bottom: 10px;
+    font-family: {json.dumps(visual_style.font_family)};
+  }}
+  .orca-path-animation-toolbar button,
+  .orca-path-animation-toolbar select {{
+    border: 1px solid {palette["border"]};
+    background: {palette["viewer_card_bg"]};
+    color: {palette["text_primary"]};
+    border-radius: 10px;
+    padding: 6px 12px;
+    font-size: 13px;
+  }}
+  .orca-path-animation-toolbar label {{
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: {palette["text_muted"]};
+  }}
+  .orca-path-animation-toolbar input[type="range"] {{
+    flex: 1 1 240px;
+    min-width: 200px;
+  }}
+  .orca-path-animation-grid {{
+    display: grid;
+    gap: 12px;
+  }}
+  .orca-path-animation-grid.with-path {{
+    grid-template-columns: minmax(0, 1.3fr) minmax(320px, 0.9fr);
+  }}
+  .orca-path-animation-grid.without-path {{
+    grid-template-columns: minmax(0, 1fr);
+  }}
+  .orca-path-structure-panel,
+  .orca-path-curve-panel {{
+    border: 1px solid {palette["viewer_border"]};
+    border-radius: 16px;
+    overflow: hidden;
+    background: {palette["viewer_card_bg"]};
+    min-height: 560px;
+  }}
+  .orca-path-animation-footnote {{
+    margin-top: 8px;
+    font-size: 13px;
+    color: {palette["text_muted"]};
+  }}
+</style>
+<script>{PLOTLY_JS_BUNDLE}</script>
+<script>
+(() => {{
+  const payload = {payload_json};
+  const structureDiv = document.getElementById(payload.component_id + "-structure");
+  const pathDiv = document.getElementById(payload.component_id + "-path");
+  const toggle = document.getElementById(payload.component_id + "-toggle");
+  const prevBtn = document.getElementById(payload.component_id + "-prev");
+  const nextBtn = document.getElementById(payload.component_id + "-next");
+  const slider = document.getElementById(payload.component_id + "-slider");
+  const status = document.getElementById(payload.component_id + "-status");
+  const speedLabel = document.getElementById(payload.component_id + "-speed-label");
+  const speedSelect = document.getElementById(payload.component_id + "-speed");
+  const cameraLabel = document.getElementById(payload.component_id + "-camera-label");
+  const cameraSelect = document.getElementById(payload.component_id + "-camera-mode");
+  const structureConfig = {{ displaylogo: false, responsive: true, scrollZoom: true }};
+  const pathConfig = {{ displaylogo: false, responsive: true, scrollZoom: false }};
+  let currentFrame = 0;
+  let timerHandle = null;
+  let playing = false;
+  let speedMultiplier = 1.0;
+  let currentCamera = null;
+
+  function clone(value) {{
+    return JSON.parse(JSON.stringify(value));
+  }}
+
+  function currentFrameLayout(index) {{
+    const frame = payload.structure_frames[index];
+    const layout = clone(frame.layout);
+    if (cameraSelect.value === "fixed_all_frames") {{
+      layout.scene.xaxis.range = payload.global_ranges[0];
+      layout.scene.yaxis.range = payload.global_ranges[1];
+      layout.scene.zaxis.range = payload.global_ranges[2];
+      layout.scene.camera = currentCamera || payload.default_camera;
+    }}
+    return layout;
+  }}
+
+  function updateStatus() {{
+    status.textContent = `${{payload.text.frame_status}} ${{currentFrame + 1}} / ${{payload.frame_count}}`;
+    slider.value = String(currentFrame);
+    toggle.textContent = playing ? payload.text.pause : payload.text.play;
+  }}
+
+  function updatePathHighlight(frameIndex) {{
+    if (!payload.show_path_plot || !payload.path_payload) return;
+    const pointIndex = payload.frame_to_point[frameIndex];
+    const highlightTraceIndex = payload.path_payload.highlight_trace_index;
+    if (highlightTraceIndex == null || !pathDiv.data) return;
+    if (pointIndex == null) {{
+      Plotly.restyle(pathDiv, {{ x: [[]], y: [[]] }}, [highlightTraceIndex]);
+      return;
+    }}
+    const point = payload.path_payload.points[String(pointIndex)] || payload.path_payload.points[pointIndex];
+    if (!point) return;
+    Plotly.restyle(
+      pathDiv,
+      {{ x: [[point.x]], y: [[point.y]], customdata: [[[point.label, Number(pointIndex)]]] }},
+      [highlightTraceIndex],
+    );
+  }}
+
+  function renderFrame(frameIndex, preserveCamera = true) {{
+    currentFrame = Math.max(0, Math.min(payload.frame_count - 1, frameIndex));
+    if (preserveCamera && structureDiv.layout && structureDiv.layout.scene && structureDiv.layout.scene.camera) {{
+      currentCamera = structureDiv.layout.scene.camera;
+    }}
+    const frame = payload.structure_frames[currentFrame];
+    Plotly.react(structureDiv, frame.data, currentFrameLayout(currentFrame), structureConfig).then(() => {{
+      if (cameraSelect.value === "fixed_all_frames" && currentCamera) {{
+        Plotly.relayout(structureDiv, {{ "scene.camera": currentCamera }});
+      }}
+    }});
+    updatePathHighlight(currentFrame);
+    updateStatus();
+  }}
+
+  function stopPlayback() {{
+    if (timerHandle) {{
+      window.clearInterval(timerHandle);
+      timerHandle = null;
+    }}
+    playing = false;
+    updateStatus();
+  }}
+
+  function startPlayback() {{
+    stopPlayback();
+    playing = true;
+    const intervalMs = Math.max(40, Math.round(payload.default_frame_duration_ms / speedMultiplier));
+    timerHandle = window.setInterval(() => {{
+      const nextFrame = (currentFrame + 1) % payload.frame_count;
+      renderFrame(nextFrame, true);
+    }}, intervalMs);
+    updateStatus();
+  }}
+
+  prevBtn.textContent = payload.text.previous;
+  nextBtn.textContent = payload.text.next;
+  speedLabel.textContent = payload.text.speed;
+  cameraLabel.textContent = payload.text.camera_mode;
+  payload.speed_options.forEach((option) => {{
+    const el = document.createElement("option");
+    el.value = String(option.value);
+    el.textContent = option.label;
+    if (option.value === 1.0) el.selected = true;
+    speedSelect.appendChild(el);
+  }});
+  [["fixed_all_frames", payload.text.fixed_all_frames], ["fit_current_frame", payload.text.fit_current_frame]].forEach(([value, label]) => {{
+    const el = document.createElement("option");
+    el.value = value;
+    el.textContent = label;
+    if (value === payload.default_camera_mode) el.selected = true;
+    cameraSelect.appendChild(el);
+  }});
+
+  toggle.addEventListener("click", () => {{
+    if (playing) {{
+      stopPlayback();
+    }} else {{
+      startPlayback();
+    }}
+  }});
+  prevBtn.addEventListener("click", () => {{
+    stopPlayback();
+    renderFrame(currentFrame - 1, true);
+  }});
+  nextBtn.addEventListener("click", () => {{
+    stopPlayback();
+    renderFrame(currentFrame + 1, true);
+  }});
+  slider.addEventListener("input", (event) => {{
+    stopPlayback();
+    renderFrame(Number(event.target.value), true);
+  }});
+  speedSelect.addEventListener("change", () => {{
+    speedMultiplier = Number(speedSelect.value || "1.0");
+    if (playing) {{
+      startPlayback();
+    }}
+  }});
+  cameraSelect.addEventListener("change", () => {{
+    stopPlayback();
+    currentCamera = null;
+    renderFrame(currentFrame, false);
+  }});
+
+  Plotly.newPlot(
+    structureDiv,
+    payload.structure_frames[0].data,
+    currentFrameLayout(0),
+    structureConfig,
+  ).then(() => {{
+    if (payload.show_path_plot && payload.path_payload) {{
+      Plotly.newPlot(
+        pathDiv,
+        payload.path_payload.figure.data,
+        payload.path_payload.figure.layout,
+        pathConfig,
+      ).then(() => {{
+        pathDiv.on("plotly_click", (event) => {{
+          const customData = event?.points?.[0]?.customdata;
+          if (!customData || customData.length < 2) return;
+          const pointIndex = Number(customData[1]);
+          const frameIndex = payload.point_to_frame[String(pointIndex)];
+          if (frameIndex == null) return;
+          stopPlayback();
+          renderFrame(Number(frameIndex), true);
+        }});
+      }});
+    }} else {{
+      pathDiv.style.display = "none";
+    }}
+    structureDiv.on("plotly_relayout", (event) => {{
+      if (event["scene.camera"]) {{
+        currentCamera = event["scene.camera"];
+      }}
+    }});
+    renderFrame(0, false);
+  }});
+}})();
+</script>
+"""
+
+
 def build_structure_viewer_html(
     atoms: Atoms,
     representation: str = "ball_stick",
     show_atom_labels: bool = False,
     enable_measurement: bool = True,
     component_id: str = "structure-viewer",
+    model_size_settings: ModelSizeSettings | None = None,
+    visual_style_key: str | None = None,
 ) -> str:
+    visual_style = resolve_visual_style(visual_style_key)
+    palette = visual_style.palette
     xyz_lines = [str(len(atoms)), "ORCA Visualizer structure"]
     atom_records: list[dict[str, float | int | str]] = []
     for index, (symbol, position) in enumerate(
@@ -89,16 +603,33 @@ def build_structure_viewer_html(
 
     payload = {
         "xyz": "\n".join(xyz_lines),
-        "style": _structure_viewer_style(representation),
+        "style": _structure_viewer_style(
+            representation,
+            model_size_settings=model_size_settings,
+            visual_style_key=visual_style.key,
+        ),
         "show_atom_labels": show_atom_labels,
         "enable_measurement": enable_measurement,
         "component_id": component_id,
         "atoms": atom_records,
+        "atom_colors": {
+            str(index): _display_atom_color(
+                atoms.get_atomic_numbers()[index],
+                visual_style_key=visual_style.key,
+            )
+            for index in range(len(atoms))
+        },
+        "theme": {
+            "viewer_background": palette["paper_bg"],
+            "label_background": palette["annotation_bg"],
+            "label_font": palette["annotation_text"],
+            "label_border": palette["annotation_border"],
+        },
         "measurement_colors": {
-            "distance": "#f59e0b",
-            "angle": "#10b981",
-            "dihedral": "#8b5cf6",
-            "selection": "#f97316",
+            "distance": palette["measure_distance"],
+            "angle": palette["measure_angle"],
+            "dihedral": palette["measure_dihedral"],
+            "selection": palette["measure_selection"],
         },
         "text": {
             "undo": tr("撤销上一个"),
@@ -129,9 +660,9 @@ def build_structure_viewer_html(
   html, body {{
     margin: 0;
     padding: 0;
-    background: white;
-    font-family: "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
-    color: #0f172a;
+    background: {palette["paper_bg"]};
+    font-family: {json.dumps(visual_style.font_family)};
+    color: {palette["text_primary"]};
   }}
   .orca-structure-shell {{
     width: 100%;
@@ -139,7 +670,7 @@ def build_structure_viewer_html(
   .orca-structure-header {{
     margin: 0 0 10px 0;
     font-size: 14px;
-    color: #334155;
+    color: {palette["text_muted"]};
   }}
   .orca-structure-toolbar {{
     display: flex;
@@ -148,26 +679,26 @@ def build_structure_viewer_html(
     margin-bottom: 10px;
   }}
   .orca-structure-toolbar button {{
-    border: 1px solid #cbd5e1;
-    background: #f8fafc;
-    color: #0f172a;
+    border: 1px solid {palette["border"]};
+    background: {palette["viewer_card_alt_bg"]};
+    color: {palette["text_primary"]};
     border-radius: 999px;
     padding: 6px 12px;
     font-size: 13px;
     cursor: pointer;
   }}
   .orca-structure-toolbar button.active {{
-    background: #0f766e;
-    border-color: #0f766e;
-    color: white;
+    background: {palette["accent_secondary"]};
+    border-color: {palette["accent_secondary"]};
+    color: {palette["text_inverse"]};
   }}
   .orca-structure-viewer {{
     width: 100%;
     height: 560px;
-    border: 1px solid #e2e8f0;
+    border: 1px solid {palette["viewer_border"]};
     border-radius: 16px;
     overflow: hidden;
-    background: radial-gradient(circle at top, #f8fafc 0%, #ffffff 68%);
+    background: {palette["viewer_bg"]};
   }}
   .orca-structure-meta {{
     display: grid;
@@ -176,14 +707,14 @@ def build_structure_viewer_html(
     margin-top: 10px;
   }}
   .orca-measure-card {{
-    border: 1px solid #e2e8f0;
+    border: 1px solid {palette["viewer_border"]};
     border-radius: 14px;
     padding: 10px 12px;
-    background: #ffffff;
+    background: {palette["viewer_card_bg"]};
   }}
   .orca-measure-title {{
     font-size: 12px;
-    color: #475569;
+    color: {palette["text_muted"]};
     margin-bottom: 6px;
     text-transform: uppercase;
     letter-spacing: 0.04em;
@@ -191,7 +722,7 @@ def build_structure_viewer_html(
   .orca-measure-body {{
     font-size: 14px;
     line-height: 1.5;
-    color: #0f172a;
+    color: {palette["text_primary"]};
     white-space: pre-wrap;
   }}
 </style>
@@ -323,9 +854,9 @@ def build_structure_viewer_html(
         }}));
         dynamicLabels.push(viewer.addLabel(`${{data.text.distance_value}}: ${{value.toFixed(4)}} Å`, {{
           position: midpoint(a, b),
-          backgroundColor: "rgba(255,255,255,0.88)",
-          fontColor: "#92400e",
-          borderColor: "#f59e0b",
+          backgroundColor: data.theme.label_background,
+          fontColor: data.theme.label_font,
+          borderColor: data.measurement_colors.distance,
           inFront: true,
         }}));
         lines.push(`${{data.text.distance_value}}: ${{value.toFixed(4)}} Å`);
@@ -350,9 +881,9 @@ def build_structure_viewer_html(
         }}));
         dynamicLabels.push(viewer.addLabel(`${{data.text.angle_value}}: ${{value.toFixed(2)}}°`, {{
           position: centroid([a, b, c]),
-          backgroundColor: "rgba(255,255,255,0.88)",
-          fontColor: "#065f46",
-          borderColor: "#10b981",
+          backgroundColor: data.theme.label_background,
+          fontColor: data.theme.label_font,
+          borderColor: data.measurement_colors.angle,
           inFront: true,
         }}));
         lines.push(`${{data.text.angle_value}}: ${{value.toFixed(2)}}°`);
@@ -384,9 +915,9 @@ def build_structure_viewer_html(
         }}));
         dynamicLabels.push(viewer.addLabel(`${{data.text.dihedral_value}}: ${{value.toFixed(2)}}°`, {{
           position: centroid([a, b, c, d]),
-          backgroundColor: "rgba(255,255,255,0.88)",
-          fontColor: "#5b21b6",
-          borderColor: "#8b5cf6",
+          backgroundColor: data.theme.label_background,
+          fontColor: data.theme.label_font,
+          borderColor: data.measurement_colors.dihedral,
           inFront: true,
         }}));
         lines.push(`${{data.text.dihedral_value}}: ${{value.toFixed(2)}}°`);
@@ -410,12 +941,26 @@ def build_structure_viewer_html(
     }}
 
     function initViewer() {{
+      const baseStyle = JSON.parse(JSON.stringify(data.style.base));
+      const atomColors = data.atom_colors || {{}};
+      function atomStyleForColor(color) {{
+        const style = {{}};
+        if (baseStyle.sphere) style.sphere = {{ ...baseStyle.sphere, color }};
+        if (baseStyle.stick) style.stick = {{ ...baseStyle.stick, color }};
+        if (baseStyle.line) style.line = {{ ...baseStyle.line, color }};
+        if (baseStyle.cross) style.cross = {{ ...baseStyle.cross, color }};
+        if (baseStyle.clicksphere) style.clicksphere = {{ ...baseStyle.clicksphere }};
+        return style;
+      }}
       viewer = window.$3Dmol.createViewer(viewerDiv, {{
-        backgroundColor: "white",
+        backgroundColor: data.theme.viewer_background,
         antialias: true,
       }});
       viewer.addModel(data.xyz, "xyz");
-      viewer.setStyle({{}}, data.style.base);
+      viewer.setStyle({{}}, baseStyle);
+      Object.entries(atomColors).forEach(([atomIndex, color]) => {{
+        viewer.setStyle({{ index: Number(atomIndex) }}, atomStyleForColor(color));
+      }});
       viewer.setClickable({{}}, true, onAtomClick);
       viewer.zoomTo();
       viewer.render();
@@ -425,9 +970,9 @@ def build_structure_viewer_html(
         allAtoms.forEach((atom) => {{
           staticLabels.push(viewer.addLabel(`${{atom.elem}}${{atom.index + 1}}`, {{
             position: atom,
-            backgroundColor: "rgba(255,255,255,0.78)",
-            fontColor: "#0f172a",
-            borderColor: "#cbd5e1",
+            backgroundColor: data.theme.label_background,
+            fontColor: data.theme.label_font,
+            borderColor: data.theme.label_border,
             inFront: true,
             fontSize: 12,
           }}));
@@ -537,7 +1082,11 @@ def create_vibration_mode_figure(
     amplitude: float = 0.6,
     frame_count: int = 16,
     show_vectors: bool = False,
+    representation: str = "ball_stick",
+    model_size_settings: ModelSizeSettings | None = None,
+    visual_style_key: str | None = None,
 ) -> go.Figure:
+    visual_style = resolve_visual_style(visual_style_key)
     scaled_displacements = _normalize_mode(mode_displacements) * amplitude
     equilibrium_positions = atoms.get_positions()
     phases = np.sin(np.linspace(0, 2 * np.pi, frame_count, endpoint=False))
@@ -548,11 +1097,25 @@ def create_vibration_mode_figure(
 
     initial_data = _representation_bond_traces(
         initial_atoms,
-        representation="ball_stick",
+        representation=representation,
         bond_pairs=bond_pairs,
-    ) + _structure_traces(initial_atoms, representation="ball_stick", show_labels=False)
+        model_size_settings=model_size_settings,
+        visual_style_key=visual_style.key,
+    ) + _structure_traces(
+        initial_atoms,
+        representation=representation,
+        show_labels=False,
+        model_size_settings=model_size_settings,
+        visual_style_key=visual_style.key,
+    )
     if show_vectors:
-        initial_data.append(_combined_vector_trace(equilibrium_positions, scaled_displacements))
+        initial_data.append(
+            _combined_vector_trace(
+                equilibrium_positions,
+                scaled_displacements,
+                visual_style_key=visual_style.key,
+            )
+        )
     figure = go.Figure(data=initial_data)
 
     frames: list[go.Frame] = []
@@ -561,19 +1124,40 @@ def create_vibration_mode_figure(
         frame_atoms.set_positions(equilibrium_positions + phase * scaled_displacements)
         frame_data = _representation_bond_traces(
             frame_atoms,
-            representation="ball_stick",
+            representation=representation,
             bond_pairs=bond_pairs,
-        ) + _structure_traces(frame_atoms, representation="ball_stick", show_labels=False)
+            model_size_settings=model_size_settings,
+            visual_style_key=visual_style.key,
+        ) + _structure_traces(
+            frame_atoms,
+            representation=representation,
+            show_labels=False,
+            model_size_settings=model_size_settings,
+            visual_style_key=visual_style.key,
+        )
         if show_vectors:
-            frame_data.append(_combined_vector_trace(equilibrium_positions, phase * scaled_displacements))
+            frame_data.append(
+                _combined_vector_trace(
+                    equilibrium_positions,
+                    phase * scaled_displacements,
+                    visual_style_key=visual_style.key,
+                )
+            )
         frames.append(go.Frame(data=frame_data, name=str(frame_index), traces=list(range(len(frame_data)))))
 
     figure.frames = frames
-    figure.update_layout(
-        template="plotly_white",
+    apply_standard_3d_style(
+        figure,
+        title=tr("振动模式动画"),
+        camera=visual_style.cameras["structure"],
+        showlegend=False,
         margin={"l": 0, "r": 0, "t": 40, "b": 0},
+        visual_style_key=visual_style.key,
+    )
+    figure.update_layout(
         uirevision="vibration-mode",
         scene={
+            **figure.layout.scene.to_plotly_json(),
             "xaxis_title": "X (A)",
             "yaxis_title": "Y (A)",
             "zaxis_title": "Z (A)",
@@ -581,7 +1165,6 @@ def create_vibration_mode_figure(
             "uirevision": "vibration-mode-camera",
         },
         showlegend=False,
-        title=tr("振动模式动画"),
         updatemenus=[
             {
                 "type": "buttons",
@@ -641,31 +1224,58 @@ def build_vibration_mode_html(
     frame_duration_ms: int = 90,
     show_vectors: bool = False,
     component_id: str = "vibration-mode",
+    representation: str = "ball_stick",
+    model_size_settings: ModelSizeSettings | None = None,
+    visual_style_key: str | None = None,
 ) -> str:
+    visual_style = resolve_visual_style(visual_style_key)
+    theme_palette = visual_style.palette
     scaled_displacements = _normalize_mode(mode_displacements) * amplitude
     positions = atoms.get_positions()
     numbers = atoms.get_atomic_numbers()
     symbols = atoms.get_chemical_symbols()
     bond_pairs = _build_bond_pairs(atoms)
 
-    palette = {
-        symbol: f"rgb({int(color[0] * 255)}, {int(color[1] * 255)}, {int(color[2] * 255)})"
-        for symbol, color in (
-            (chemical_symbols[number], jmol_colors[number]) for number in sorted(set(numbers))
-        )
-    }
-
+    style = _resolved_model_size_settings(model_size_settings)
+    atom_colors = _structure_atom_colors(numbers, visual_style_key=visual_style.key)
     payload = {
         "component_id": component_id,
         "frame_count": frame_count,
         "frame_duration_ms": frame_duration_ms,
         "show_vectors": show_vectors,
+        "representation": representation,
         "symbols": symbols,
-        "sizes": [max(covalent_radii[number] * 18, 12) for number in numbers],
-        "colors": [palette[symbol] for symbol in symbols],
+        "sizes": _structure_atom_sizes(numbers, representation, model_size_settings=style),
+        "bond_width": float(
+            _representation_config(
+                representation,
+                model_size_settings=style,
+                visual_style_key=visual_style.key,
+            )["bond_width"]
+        ),
+        "colors": atom_colors,
+        "theme": {
+            "paper_bg": theme_palette["paper_bg"],
+            "text_primary": theme_palette["text_primary"],
+            "text_muted": theme_palette["text_muted"],
+            "border": theme_palette["border"],
+            "viewer_card_bg": theme_palette["viewer_card_bg"],
+            "scene_bg": theme_palette["scene_bg"],
+            "axis": theme_palette["axis"],
+            "grid": theme_palette["grid"],
+            "bond": theme_palette["structure_bond"],
+            "vector": theme_palette["accent_positive"],
+            "atom_outline": theme_palette["atom_outline"],
+            "font_family": visual_style.font_family,
+            "camera": visual_style.cameras["structure"],
+            "plotly_template": visual_style.plotly_template,
+        },
         "equilibrium_positions": positions.tolist(),
         "displacements": scaled_displacements.tolist(),
         "bond_pairs": bond_pairs,
+        "text": {
+            "frame_status": tr("当前帧"),
+        },
     }
 
     return f"""
@@ -674,23 +1284,25 @@ def build_vibration_mode_html(
   <div class="vib-controls">
     <button id="{component_id}-toggle" type="button">{tr("播放")}</button>
     <input id="{component_id}-slider" type="range" min="0" max="{frame_count - 1}" value="0" step="1" />
-    <span id="{component_id}-status">Frame 1/{frame_count}</span>
+    <span id="{component_id}-status">{tr("当前帧")} 1/{frame_count}</span>
   </div>
 </div>
 <style>
   .vib-root {{
     width: 100%;
+    color: {theme_palette["text_primary"]};
   }}
   .vib-controls {{
     display: flex;
     align-items: center;
     gap: 12px;
     padding-top: 8px;
-    font-family: sans-serif;
+    font-family: {json.dumps(visual_style.font_family)};
   }}
   .vib-controls button {{
-    border: 1px solid #d1d5db;
-    background: #ffffff;
+    border: 1px solid {theme_palette["border"]};
+    background: {theme_palette["viewer_card_bg"]};
+    color: {theme_palette["text_primary"]};
     padding: 6px 12px;
     border-radius: 8px;
     cursor: pointer;
@@ -779,7 +1391,7 @@ def build_vibration_mode_html(
         marker: {{
           size: payload.sizes,
           color: payload.colors,
-          line: {{ color: "#1f1f1f", width: 1 }},
+          line: {{ color: payload.theme.atom_outline, width: 1.2 }},
           opacity: 0.95,
         }},
         showlegend: false,
@@ -790,7 +1402,7 @@ def build_vibration_mode_html(
         x: bondAxes.x,
         y: bondAxes.y,
         z: bondAxes.z,
-        line: {{ color: "#6b7280", width: 6 }},
+        line: {{ color: payload.theme.bond, width: payload.bond_width }},
         hoverinfo: "skip",
         showlegend: false,
       }},
@@ -804,7 +1416,7 @@ def build_vibration_mode_html(
         x: vectorAxes.x,
         y: vectorAxes.y,
         z: vectorAxes.z,
-        line: {{ color: "#dc2626", width: 7 }},
+        line: {{ color: payload.theme.vector, width: 7 }},
         hoverinfo: "skip",
         showlegend: false,
       }});
@@ -838,7 +1450,7 @@ def build_vibration_mode_html(
       }}, [2]);
     }}
     slider.value = String(currentFrame);
-    status.textContent = `Frame ${{currentFrame + 1}}/${{payload.frame_count}}`;
+    status.textContent = `${{payload.text.frame_status}} ${{currentFrame + 1}}/${{payload.frame_count}}`;
   }}
 
   function startInteraction() {{
@@ -881,15 +1493,20 @@ def build_vibration_mode_html(
   }});
 
   Plotly.newPlot(div, makeData(phases[0]), {{
-    template: "plotly_white",
+    template: payload.theme.plotly_template,
     margin: {{ l: 0, r: 0, t: 40, b: 0 }},
+    paper_bgcolor: payload.theme.paper_bg,
+    plot_bgcolor: payload.theme.paper_bg,
+    font: {{ family: payload.theme.font_family, color: payload.theme.text_primary, size: 14 }},
     uirevision: "vibration-mode-html",
     scene: {{
-      xaxis: {{ title: "X (A)" }},
-      yaxis: {{ title: "Y (A)" }},
-      zaxis: {{ title: "Z (A)" }},
+      xaxis: {{ title: "X (A)", gridcolor: payload.theme.grid, linecolor: payload.theme.axis, tickfont: {{ color: payload.theme.text_muted }} }},
+      yaxis: {{ title: "Y (A)", gridcolor: payload.theme.grid, linecolor: payload.theme.axis, tickfont: {{ color: payload.theme.text_muted }} }},
+      zaxis: {{ title: "Z (A)", gridcolor: payload.theme.grid, linecolor: payload.theme.axis, tickfont: {{ color: payload.theme.text_muted }} }},
+      bgcolor: payload.theme.scene_bg,
       aspectmode: "data",
       dragmode: "orbit",
+      camera: payload.theme.camera,
       uirevision: "vibration-mode-html-camera",
     }},
     showlegend: false,
@@ -915,7 +1532,14 @@ def build_vibration_mode_html(
 """
 
 
-def create_mode_magnitude_figure(atoms: Atoms, mode_displacements: np.ndarray) -> go.Figure:
+def create_mode_magnitude_figure(
+    atoms: Atoms,
+    mode_displacements: np.ndarray,
+    *,
+    visual_style_key: str | None = None,
+) -> go.Figure:
+    visual_style = resolve_visual_style(visual_style_key)
+    palette = visual_style.palette
     magnitudes = np.linalg.norm(mode_displacements, axis=1)
     labels = [f"{symbol}{index + 1}" for index, symbol in enumerate(atoms.get_chemical_symbols())]
     figure = go.Figure(
@@ -923,8 +1547,8 @@ def create_mode_magnitude_figure(atoms: Atoms, mode_displacements: np.ndarray) -
             go.Bar(
                 x=labels,
                 y=magnitudes,
-                marker_color=ACCENT_ORANGE,
-                marker_line={"color": "#ffffff", "width": 0.8},
+                marker_color=palette["accent_warning"],
+                marker_line={"color": palette["bar_edge"], "width": 0.8},
                 hovertemplate=f"%{{x}}<br>{tr('位移强度')} %{{y:.4f}}<extra></extra>",
             )
         ]
@@ -936,6 +1560,7 @@ def create_mode_magnitude_figure(atoms: Atoms, mode_displacements: np.ndarray) -
         yaxis_title=tr("相对位移强度"),
         showlegend=False,
         margin={"l": 72, "r": 18, "t": 58, "b": 72},
+        visual_style_key=visual_style.key,
     )
     return figure
 
@@ -973,13 +1598,20 @@ def _structure_traces(
     atoms: Atoms,
     representation: str = "ball_stick",
     show_labels: bool = False,
+    model_size_settings: ModelSizeSettings | None = None,
+    visual_style_key: str | None = None,
 ) -> list[go.Scatter3d]:
+    visual_style = resolve_visual_style(visual_style_key)
     positions = atoms.get_positions()
     numbers = atoms.get_atomic_numbers()
     symbols = atoms.get_chemical_symbols()
     labels = [f"{symbol}{index + 1}" for index, symbol in enumerate(symbols)]
-    style = _representation_config(representation)
-    colors = _structure_atom_colors(numbers)
+    style = _representation_config(
+        representation,
+        model_size_settings=model_size_settings,
+        visual_style_key=visual_style.key,
+    )
+    colors = _structure_atom_colors(numbers, visual_style_key=visual_style.key)
 
     scatter = go.Scatter3d(
         x=positions[:, 0],
@@ -996,9 +1628,9 @@ def _structure_traces(
             dtype=object,
         ),
         marker={
-            "size": _structure_atom_sizes(numbers, representation),
+            "size": _structure_atom_sizes(numbers, representation, model_size_settings=model_size_settings),
             "color": colors,
-            "line": {"color": "#1f1f1f", "width": style["atom_line_width"]},
+            "line": {"color": visual_style.palette["atom_outline"], "width": style["atom_line_width"]},
             "opacity": style["atom_opacity"],
         },
         showlegend=False,
@@ -1008,8 +1640,12 @@ def _structure_traces(
 
 
 def _mode_vector_traces(
-    positions: np.ndarray, displacements: np.ndarray
+    positions: np.ndarray,
+    displacements: np.ndarray,
+    *,
+    visual_style_key: str | None = None,
 ) -> list[go.Scatter3d]:
+    visual_style = resolve_visual_style(visual_style_key)
     traces: list[go.Scatter3d] = []
     for origin, delta in zip(positions, displacements, strict=False):
         if np.linalg.norm(delta) < 1e-9:
@@ -1021,7 +1657,7 @@ def _mode_vector_traces(
                 y=[origin[1], target[1]],
                 z=[origin[2], target[2]],
                 mode="lines",
-                line={"color": "#dc2626", "width": 7},
+                line={"color": visual_style.palette["accent_positive"], "width": 7},
                 hoverinfo="skip",
                 showlegend=False,
             )
@@ -1058,18 +1694,22 @@ def _measurement_indices_are_valid(
 
 
 def _measurement_traces(
-    atoms: Atoms, measurement_atoms: dict[str, list[int]] | None = None
+    atoms: Atoms,
+    measurement_atoms: dict[str, list[int]] | None = None,
+    *,
+    visual_style_key: str | None = None,
 ) -> list[go.Scatter3d]:
     if not measurement_atoms:
         return []
 
+    visual_style = resolve_visual_style(visual_style_key)
     positions = atoms.get_positions()
     traces: list[go.Scatter3d] = []
     highlighted_indices: list[int] = []
     line_specs = [
-        ("distance", "#f59e0b", [(0, 1)]),
-        ("angle", "#10b981", [(0, 1), (1, 2)]),
-        ("dihedral", "#8b5cf6", [(0, 1), (1, 2), (2, 3)]),
+        ("distance", visual_style.palette["measure_distance"], [(0, 1)]),
+        ("angle", visual_style.palette["measure_angle"], [(0, 1), (1, 2)]),
+        ("dihedral", visual_style.palette["measure_dihedral"], [(0, 1), (1, 2), (2, 3)]),
     ]
     for key, color, segments in line_specs:
         indices = measurement_atoms.get(key, [])
@@ -1105,7 +1745,7 @@ def _measurement_traces(
             marker={
                 "size": 19,
                 "color": "rgba(248, 250, 252, 0.18)",
-                "line": {"color": "#f97316", "width": 5},
+                "line": {"color": visual_style.palette["measure_selection"], "width": 5},
                 "symbol": "circle-open",
             },
             hoverinfo="skip",
@@ -1146,94 +1786,119 @@ def _combined_bond_trace(
     )
 
 
-def _representation_config(representation: str) -> dict[str, float | bool]:
+def _representation_config(
+    representation: str,
+    *,
+    model_size_settings: ModelSizeSettings | None = None,
+    visual_style_key: str | None = None,
+) -> dict[str, float | bool]:
+    visual_style = resolve_visual_style(visual_style_key)
+    style = _resolved_model_size_settings(model_size_settings)
     return {
         "ball_stick": {
-            "atom_scale": 20.5,
-            "atom_min_size": 13.5,
-            "atom_line_width": 1.2,
+            "atom_scale": 40.0 * style.sphere_scale,
+            "atom_min_size": 5.8 * (style.sphere_scale / 0.30),
+            "atom_line_width": 1.0,
             "atom_opacity": 0.98,
             "show_bonds": True,
-            "bond_width": 4.2,
-            "bond_color": "#6b7280",
+            "bond_width": 20.0 * style.stick_radius,
+            "bond_color": visual_style.palette["structure_bond"],
         },
         "space_filling": {
-            "atom_scale": 18.0,
-            "atom_min_size": 18.0,
+            "atom_scale": 16.5 * style.space_filling_scale,
+            "atom_min_size": 12.0 * style.space_filling_scale,
             "atom_line_width": 0.8,
             "atom_opacity": 0.94,
             "show_bonds": False,
             "bond_width": 0.0,
-            "bond_color": "#6b7280",
+            "bond_color": visual_style.palette["structure_bond"],
         },
         "stick": {
-            "atom_scale": 5.6,
-            "atom_min_size": 5.0,
-            "atom_line_width": 0.6,
+            "atom_scale": 18.0 * max(style.sphere_scale, 0.18),
+            "atom_min_size": 4.0,
+            "atom_line_width": 0.5,
             "atom_opacity": 0.98,
             "show_bonds": True,
-            "bond_width": 11.0,
-            "bond_color": "#4b5563",
+            "bond_width": 28.0 * style.stick_radius,
+            "bond_color": visual_style.palette["structure_stick"],
         },
         "wireframe": {
-            "atom_scale": 3.6,
-            "atom_min_size": 3.5,
+            "atom_scale": 10.0 + style.wireframe_line_width * 1.4,
+            "atom_min_size": 2.8,
             "atom_line_width": 0.0,
-            "atom_opacity": 0.75,
+            "atom_opacity": 0.74,
             "show_bonds": True,
-            "bond_width": 3.0,
-            "bond_color": "#64748b",
+            "bond_width": style.wireframe_line_width,
+            "bond_color": visual_style.palette["structure_wire"],
         },
-    }.get(representation, {
-        "atom_scale": 15.0,
-        "atom_min_size": 10.0,
-        "atom_line_width": 1.0,
-        "atom_opacity": 0.96,
-        "show_bonds": True,
-        "bond_width": 7.0,
-        "bond_color": "#6b7280",
-    })
+    }.get(
+        representation,
+        {
+            "atom_scale": 40.0 * style.sphere_scale,
+            "atom_min_size": 5.8,
+            "atom_line_width": 1.0,
+            "atom_opacity": 0.96,
+            "show_bonds": True,
+            "bond_width": 20.0 * style.stick_radius,
+            "bond_color": visual_style.palette["structure_bond"],
+        },
+    )
 
 
-def _structure_viewer_style(representation: str) -> dict[str, Any]:
+def _structure_viewer_style(
+    representation: str,
+    model_size_settings: ModelSizeSettings | None = None,
+    visual_style_key: str | None = None,
+) -> dict[str, Any]:
+    visual_style = resolve_visual_style(visual_style_key)
+    style = _resolved_model_size_settings(model_size_settings)
     if representation == "space_filling":
         return {
             "base": {
-                "sphere": {"scale": 1.0, "colorscheme": "Jmol"},
+                "sphere": {"scale": style.space_filling_scale},
                 "clicksphere": {"radius": 0.6},
             },
             "highlight_radius": 0.55,
+            "highlight_color": visual_style.palette["measure_selection"],
         }
     if representation == "stick":
         return {
             "base": {
-                "stick": {"radius": 0.22, "colorscheme": "Jmol"},
-                "sphere": {"scale": 0.2, "colorscheme": "Jmol"},
+                "stick": {"radius": style.stick_radius},
+                "sphere": {"scale": max(0.16, style.sphere_scale * 0.55)},
                 "clicksphere": {"radius": 0.55},
             },
             "highlight_radius": 0.42,
+            "highlight_color": visual_style.palette["measure_selection"],
         }
     if representation == "wireframe":
         return {
             "base": {
-                "line": {"linewidth": 2.0, "colorscheme": "Jmol"},
-                "cross": {"radius": 0.16, "colorscheme": "Jmol"},
+                "line": {"linewidth": style.wireframe_line_width},
+                "cross": {"radius": max(0.12, 0.08 + style.wireframe_line_width * 0.02)},
                 "clicksphere": {"radius": 0.48},
             },
             "highlight_radius": 0.36,
+            "highlight_color": visual_style.palette["measure_selection"],
         }
     return {
         "base": {
-            "stick": {"radius": 0.145, "colorscheme": "Jmol"},
-            "sphere": {"scale": 0.46, "colorscheme": "Jmol"},
+            "stick": {"radius": style.stick_radius},
+            "sphere": {"scale": style.sphere_scale},
             "clicksphere": {"radius": 0.62},
         },
         "highlight_radius": 0.50,
+        "highlight_color": visual_style.palette["measure_selection"],
     }
 
 
-def _structure_atom_sizes(numbers: list[int] | np.ndarray, representation: str) -> list[float]:
-    style = _representation_config(representation)
+def _structure_atom_sizes(
+    numbers: list[int] | np.ndarray,
+    representation: str,
+    *,
+    model_size_settings: ModelSizeSettings | None = None,
+) -> list[float]:
+    style = _representation_config(representation, model_size_settings=model_size_settings)
     sizes: list[float] = []
     for number in numbers:
         if representation == "space_filling":
@@ -1250,8 +1915,9 @@ def _charge_atom_sizes(
     numbers: list[int] | np.ndarray,
     charge_values: np.ndarray,
     representation: str,
+    model_size_settings: ModelSizeSettings | None = None,
 ) -> list[float]:
-    base_sizes = _structure_atom_sizes(numbers, representation)
+    base_sizes = _structure_atom_sizes(numbers, representation, model_size_settings=model_size_settings)
     boost_factor = {
         "ball_stick": 16.0,
         "space_filling": 10.0,
@@ -1268,11 +1934,15 @@ def _representation_bond_trace(
     atoms: Atoms,
     representation: str = "ball_stick",
     bond_pairs: list[tuple[int, int]] | None = None,
+    model_size_settings: ModelSizeSettings | None = None,
+    visual_style_key: str | None = None,
 ) -> go.Scatter3d | None:
     traces = _representation_bond_traces(
         atoms,
         representation=representation,
         bond_pairs=bond_pairs,
+        model_size_settings=model_size_settings,
+        visual_style_key=visual_style_key,
     )
     if not traces:
         return None
@@ -1283,8 +1953,14 @@ def _representation_bond_traces(
     atoms: Atoms,
     representation: str = "ball_stick",
     bond_pairs: list[tuple[int, int]] | None = None,
+    model_size_settings: ModelSizeSettings | None = None,
+    visual_style_key: str | None = None,
 ) -> list[go.Scatter3d]:
-    style = _representation_config(representation)
+    style = _representation_config(
+        representation,
+        model_size_settings=model_size_settings,
+        visual_style_key=visual_style_key,
+    )
     if not bool(style["show_bonds"]):
         return []
     if bond_pairs is None:
@@ -1292,7 +1968,12 @@ def _representation_bond_traces(
     if not bond_pairs:
         return []
     if representation == "ball_stick":
-        return _ball_stick_bond_traces(atoms, bond_pairs, width=float(style["bond_width"]))
+        return _ball_stick_bond_traces(
+            atoms,
+            bond_pairs,
+            width=float(style["bond_width"]),
+            visual_style_key=visual_style_key,
+        )
     return [
         _combined_bond_trace(
             atoms,
@@ -1308,9 +1989,10 @@ def _ball_stick_bond_traces(
     bond_pairs: list[tuple[int, int]],
     *,
     width: float,
+    visual_style_key: str | None = None,
 ) -> list[go.Scatter3d]:
     positions = atoms.get_positions()
-    atom_colors = _structure_atom_colors(atoms.get_atomic_numbers())
+    atom_colors = _structure_atom_colors(atoms.get_atomic_numbers(), visual_style_key=visual_style_key)
     segments_by_color: dict[str, dict[str, list[float | None]]] = {}
 
     for left, right in bond_pairs:
@@ -1346,17 +2028,37 @@ def _ball_stick_bond_traces(
     return traces
 
 
-def _structure_atom_colors(numbers: list[int] | np.ndarray) -> list[str]:
+def _resolved_model_size_settings(model_size_settings: ModelSizeSettings | None) -> ModelSizeSettings:
+    return model_size_preset("standard") if model_size_settings is None else model_size_settings
+
+
+def _structure_atom_colors(
+    numbers: list[int] | np.ndarray,
+    *,
+    visual_style_key: str | None = None,
+) -> list[str]:
     palette = {
-        number: f"rgb({int(jmol_colors[number][0] * 255)}, {int(jmol_colors[number][1] * 255)}, {int(jmol_colors[number][2] * 255)})"
+        number: _display_atom_color(number, visual_style_key=visual_style_key)
         for number in sorted(set(int(number) for number in numbers))
     }
     return [palette[int(number)] for number in numbers]
 
 
+def _display_atom_color(number: int, *, visual_style_key: str | None = None) -> str:
+    visual_style = resolve_visual_style(visual_style_key)
+    if int(number) == 1:
+        return visual_style.palette["hydrogen_fill"]
+    red, green, blue = jmol_colors[int(number)]
+    return f"rgb({int(red * 255)}, {int(green * 255)}, {int(blue * 255)})"
+
+
 def _combined_vector_trace(
-    positions: np.ndarray, displacements: np.ndarray
+    positions: np.ndarray,
+    displacements: np.ndarray,
+    *,
+    visual_style_key: str | None = None,
 ) -> go.Scatter3d:
+    visual_style = resolve_visual_style(visual_style_key)
     x_coords: list[float | None] = []
     y_coords: list[float | None] = []
     z_coords: list[float | None] = []
@@ -1370,7 +2072,7 @@ def _combined_vector_trace(
         y=y_coords,
         z=z_coords,
         mode="lines",
-        line={"color": "#dc2626", "width": 7},
+        line={"color": visual_style.palette["accent_positive"], "width": 7},
         hoverinfo="skip",
         showlegend=False,
     )

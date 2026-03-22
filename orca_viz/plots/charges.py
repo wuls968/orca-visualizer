@@ -7,24 +7,32 @@ from ase import Atoms
 
 from ..i18n import tr
 from ..plot_theme import (
-    ACCENT_BLUE,
-    ACCENT_RED,
-    STRUCTURE_CAMERA,
+    ModelSizeSettings,
     apply_standard_2d_style,
     apply_standard_3d_style,
+    resolve_visual_style,
 )
 from .structure import _charge_atom_sizes, _representation_bond_traces, _representation_config
 
-def create_charge_figure(charges: pd.DataFrame, title: str) -> go.Figure:
+def create_charge_figure(
+    charges: pd.DataFrame,
+    title: str,
+    *,
+    visual_style_key: str | None = None,
+) -> go.Figure:
+    visual_style = resolve_visual_style(visual_style_key)
+    palette = visual_style.palette
     labels = [f"{row['element']}{int(row['index']) + 1}" for _, row in charges.iterrows()]
-    colors = [ACCENT_RED if value > 0 else ACCENT_BLUE for value in charges["charge"]]
+    colors = [
+        palette["charge_positive"] if value > 0 else palette["charge_negative"] for value in charges["charge"]
+    ]
     figure = go.Figure(
         data=[
             go.Bar(
                 x=labels,
                 y=charges["charge"],
                 marker_color=colors,
-                marker_line={"color": "#ffffff", "width": 0.9},
+                marker_line={"color": palette["bar_edge"], "width": 0.9},
                 hovertemplate=f"%{{x}}<br>{tr('电荷')} %{{y:.4f}}<extra></extra>",
             )
         ]
@@ -36,6 +44,7 @@ def create_charge_figure(charges: pd.DataFrame, title: str) -> go.Figure:
         yaxis_title=tr("电荷"),
         showlegend=False,
         margin={"l": 72, "r": 18, "t": 58, "b": 72},
+        visual_style_key=visual_style.key,
     )
     return figure
 
@@ -46,10 +55,14 @@ def create_charge_3d_figure(
     title: str,
     show_charge_labels: bool = True,
     representation: str = "ball_stick",
+    model_size_settings: ModelSizeSettings | None = None,
+    visual_style_key: str | None = None,
 ) -> go.Figure:
+    visual_style = resolve_visual_style(visual_style_key)
+    palette = visual_style.palette
     if atoms is None or len(atoms) == 0:
         figure = go.Figure()
-        figure.update_layout(template="plotly_white", title=title)
+        apply_standard_3d_style(figure, title=title, showlegend=False, visual_style_key=visual_style.key)
         return figure
 
     merged = _merge_charge_data(atoms, charges)
@@ -57,11 +70,21 @@ def create_charge_3d_figure(
     atomic_numbers = atoms.get_atomic_numbers()
     charge_values = merged["charge"].to_numpy(dtype=float)
     charge_span = max(float(np.max(np.abs(charge_values))), 1e-6)
-    style = _representation_config(representation)
-    atom_sizes = _charge_atom_sizes(atomic_numbers, charge_values, representation)
+    representation_style = _representation_config(representation, model_size_settings=model_size_settings)
+    atom_sizes = _charge_atom_sizes(
+        atomic_numbers,
+        charge_values,
+        representation,
+        model_size_settings=model_size_settings,
+    )
 
     figure = go.Figure()
-    for trace in _representation_bond_traces(atoms, representation=representation):
+    for trace in _representation_bond_traces(
+        atoms,
+        representation=representation,
+        model_size_settings=model_size_settings,
+        visual_style_key=visual_style.key,
+    ):
         figure.add_trace(trace)
     figure.add_trace(
         go.Scatter3d(
@@ -71,7 +94,7 @@ def create_charge_3d_figure(
             mode="markers+text" if show_charge_labels else "markers",
             text=merged["label"] if show_charge_labels else None,
             textposition="top center",
-            textfont={"size": 11, "color": "#111827"},
+            textfont={"size": 11, "color": palette["text_primary"]},
             customdata=np.stack(
                 [
                     merged["atom_symbol"],
@@ -87,13 +110,13 @@ def create_charge_3d_figure(
             marker={
                 "size": atom_sizes,
                 "color": charge_values,
-                "colorscale": "RdBu_r",
+                "colorscale": visual_style.charge_colorscale,
                 "cmin": -charge_span,
                 "cmax": charge_span,
                 "cmid": 0,
                 "colorbar": {"title": tr("原子电荷")},
-                "line": {"color": "#111827", "width": 1.2},
-                "opacity": style["atom_opacity"],
+                "line": {"color": palette["text_primary"], "width": 1.2},
+                "opacity": representation_style["atom_opacity"],
             },
             showlegend=False,
         )
@@ -101,9 +124,10 @@ def create_charge_3d_figure(
     apply_standard_3d_style(
         figure,
         title=title,
-        camera=STRUCTURE_CAMERA,
+        camera=visual_style.cameras["structure"],
         showlegend=False,
         margin={"l": 0, "r": 0, "t": 56, "b": 0},
+        visual_style_key=visual_style.key,
     )
     return figure
 

@@ -12,6 +12,7 @@ from typing import Any
 from .cube import CubeData, parse_cube_file
 from .i18n import tr
 from .orca_runtime import resolve_orca_tool
+from .parser import extract_frontier_orbital_summary
 
 
 DENSITY_LINE_RE = re.compile(r"^\s*\d+:\s+(\S+)\s*$", re.MULTILINE)
@@ -42,6 +43,13 @@ def load_gbw_file(path: str | Path, source_name: str | None = None) -> GbwData:
         property_txt_path=sidecars.get("property_txt"),
         property_json_path=sidecars.get("property_json"),
     )
+    orbital_summary, orbital_source = _extract_frontier_summary_from_sidecars(sidecars)
+    if orbital_summary:
+        for key, value in orbital_summary.items():
+            property_summary.setdefault(key, value)
+        if orbital_source:
+            property_sources.append(orbital_source)
+    _derive_property_summary(property_summary)
     return GbwData(
         source_name=source_name or file_path.name,
         file_path=file_path,
@@ -68,7 +76,16 @@ def discover_gbw_sidecars(path: str | Path) -> dict[str, Path]:
         "property_txt": parent / f"{stem}.property.txt",
         "xyz": parent / f"{stem}.xyz",
     }
-    return {key: candidate for key, candidate in candidates.items() if candidate.exists()}
+    discovered = {key: candidate for key, candidate in candidates.items() if candidate.exists()}
+    if "out" not in discovered:
+        fallback_out = _pick_unique_sidecar(parent, "*.out")
+        if fallback_out is not None:
+            discovered["out"] = fallback_out
+    if "log" not in discovered:
+        fallback_log = _pick_unique_sidecar(parent, "*.log")
+        if fallback_log is not None:
+            discovered["log"] = fallback_log
+    return discovered
 def resolve_property_orbital_index(
     property_summary: dict[str, Any],
     requested_orbital: str,
@@ -415,6 +432,22 @@ def _extract_property_json_summary(path: Path) -> dict[str, Any]:
         "converged": ["converged", "is_converged", "calculation_converged"],
         "homo_index": ["homoindex", "homo_index"],
         "lumo_index": ["lumoindex", "lumo_index"],
+        "homo_energy_hartree": ["homoenergyhartree", "homo_energy_hartree", "homoeh"],
+        "homo_energy_ev": ["homoenergyev", "homo_energy_ev", "homoev"],
+        "lumo_energy_hartree": ["lumoenergyhartree", "lumo_energy_hartree", "lumoeh"],
+        "lumo_energy_ev": ["lumoenergyev", "lumo_energy_ev", "lumoev"],
+        "homo_lumo_gap_hartree": [
+            "homolumogaphartree",
+            "homo_lumo_gap_hartree",
+            "gaphartree",
+            "frontiergaphartree",
+        ],
+        "homo_lumo_gap_ev": [
+            "homolumogapev",
+            "homo_lumo_gap_ev",
+            "gapev",
+            "frontiergapev",
+        ],
         "alpha_homo_index": ["alphahomoindex", "alpha_homo_index"],
         "alpha_lumo_index": ["alphalumoindex", "alpha_lumo_index"],
         "beta_homo_index": ["betahomoindex", "beta_homo_index"],
@@ -431,6 +464,12 @@ def _extract_property_json_summary(path: Path) -> dict[str, Any]:
         "converged": _coerce_bool,
         "homo_index": _coerce_int,
         "lumo_index": _coerce_int,
+        "homo_energy_hartree": _coerce_float,
+        "homo_energy_ev": _coerce_float,
+        "lumo_energy_hartree": _coerce_float,
+        "lumo_energy_ev": _coerce_float,
+        "homo_lumo_gap_hartree": _coerce_float,
+        "homo_lumo_gap_ev": _coerce_float,
         "alpha_homo_index": _coerce_int,
         "alpha_lumo_index": _coerce_int,
         "beta_homo_index": _coerce_int,
@@ -470,6 +509,54 @@ def _derive_property_summary(summary: dict[str, Any]) -> None:
         if n_alpha == n_beta:
             summary.setdefault("homo_index", n_alpha - 1)
             summary.setdefault("lumo_index", n_alpha)
+
+    homo_energy_hartree = _coerce_float(summary.get("homo_energy_hartree"))
+    lumo_energy_hartree = _coerce_float(summary.get("lumo_energy_hartree"))
+    homo_energy_ev = _coerce_float(summary.get("homo_energy_ev"))
+    lumo_energy_ev = _coerce_float(summary.get("lumo_energy_ev"))
+
+    if homo_energy_hartree is not None:
+        summary["homo_energy_hartree"] = homo_energy_hartree
+        summary.setdefault("homo_energy_ev", homo_energy_hartree * 27.211386245988)
+    if lumo_energy_hartree is not None:
+        summary["lumo_energy_hartree"] = lumo_energy_hartree
+        summary.setdefault("lumo_energy_ev", lumo_energy_hartree * 27.211386245988)
+    if homo_energy_ev is not None:
+        summary["homo_energy_ev"] = homo_energy_ev
+    if lumo_energy_ev is not None:
+        summary["lumo_energy_ev"] = lumo_energy_ev
+
+    if (
+        _coerce_float(summary.get("homo_lumo_gap_hartree")) is None
+        and isinstance(summary.get("homo_energy_hartree"), (int, float))
+        and isinstance(summary.get("lumo_energy_hartree"), (int, float))
+    ):
+        summary["homo_lumo_gap_hartree"] = float(summary["lumo_energy_hartree"]) - float(
+            summary["homo_energy_hartree"]
+        )
+    if (
+        _coerce_float(summary.get("homo_lumo_gap_ev")) is None
+        and isinstance(summary.get("homo_energy_ev"), (int, float))
+        and isinstance(summary.get("lumo_energy_ev"), (int, float))
+    ):
+        summary["homo_lumo_gap_ev"] = float(summary["lumo_energy_ev"]) - float(summary["homo_energy_ev"])
+
+
+def _extract_frontier_summary_from_sidecars(sidecars: dict[str, Path]) -> tuple[dict[str, Any], str | None]:
+    for sidecar_key, source_label in [("out", tr("out 轨道能量")), ("log", tr("log 轨道能量"))]:
+        sidecar_path = sidecars.get(sidecar_key)
+        if sidecar_path is None or not sidecar_path.exists():
+            continue
+        raw_text = sidecar_path.read_text(encoding="utf-8", errors="ignore")
+        summary = extract_frontier_orbital_summary(raw_text)
+        if summary:
+            return summary, source_label
+    return {}, None
+
+
+def _pick_unique_sidecar(parent: Path, pattern: str) -> Path | None:
+    matches = sorted(path for path in parent.glob(pattern) if path.is_file())
+    return matches[0] if len(matches) == 1 else None
 
 
 def _json_scalar_index(payload: Any) -> dict[str, list[Any]]:

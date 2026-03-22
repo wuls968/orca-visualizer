@@ -7,11 +7,13 @@ from ..cube import CubeData
 from ..i18n import tr
 from ..parser import OrcaParseResult, summarize_results
 from ..visualization import create_batch_energy_figure, create_batch_excited_state_figure
-from .common import render_page_note, render_plotly_chart
+from .common import render_page_note, render_page_visual_style_override, render_plotly_chart, resolve_visual_style_key
 from .data import download_dataframe, load_batch_inputs
 
 
 def render_batch_mode() -> None:
+    render_page_visual_style_override("batch-page")
+    visual_style_key = resolve_visual_style_key("batch-page")
     render_page_note(
         tr("批量比较说明"),
         [
@@ -44,13 +46,13 @@ def render_batch_mode() -> None:
         left, right = st.columns(2)
         with left:
             render_plotly_chart(
-                create_batch_energy_figure(summary_df),
+                create_batch_energy_figure(summary_df, visual_style_key=visual_style_key),
                 key="batch-energy-chart",
                 file_name="orca_batch_energy",
             )
         with right:
             render_plotly_chart(
-                create_batch_excited_state_figure(summary_df),
+                create_batch_excited_state_figure(summary_df, visual_style_key=visual_style_key),
                 key="batch-excited-state-chart",
                 file_name="orca_batch_excited_states",
             )

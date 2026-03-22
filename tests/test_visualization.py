@@ -5,9 +5,12 @@ import pandas as pd
 from ase import Atoms
 
 from orca_viz.i18n import set_language
+from orca_viz.pathway import PathFrame, PathwayResult
+from orca_viz.plot_theme import figure_visual_style_key, model_size_preset, resolve_visual_style
 from orca_viz.visualization import (
     STATIC_IMAGE_EXPORT_AVAILABLE,
     atom_reference_dataframe,
+    build_pathway_animation_html,
     build_structure_viewer_html,
     charge_extrema_dataframe,
     create_charge_3d_figure,
@@ -75,6 +78,32 @@ class VisualizationTests(unittest.TestCase):
         self.assertGreater(ball_stick_atom_trace.marker.size[0], stick_atom_trace.marker.size[0])
         self.assertLess(ball_stick_bond_trace.line.width, stick_bond_trace.line.width)
 
+    def test_model_size_presets_change_structure_sizes(self) -> None:
+        compact = model_size_preset("compact")
+        standard = model_size_preset("standard")
+        presentation = model_size_preset("presentation")
+
+        compact_figure = create_structure_figure(
+            self.atoms,
+            representation="ball_stick",
+            model_size_settings=compact,
+        )
+        presentation_figure = create_structure_figure(
+            self.atoms,
+            representation="ball_stick",
+            model_size_settings=presentation,
+        )
+
+        compact_atoms = next(trace for trace in compact_figure.data if trace.name == "_structure_atoms")
+        compact_bonds = next(trace for trace in compact_figure.data if trace.name == "_structure_bonds")
+        presentation_atoms = next(trace for trace in presentation_figure.data if trace.name == "_structure_atoms")
+        presentation_bonds = next(trace for trace in presentation_figure.data if trace.name == "_structure_bonds")
+
+        self.assertAlmostEqual(standard.sphere_scale, 0.30)
+        self.assertAlmostEqual(standard.stick_radius, 0.20)
+        self.assertGreater(presentation_atoms.marker.size[0], compact_atoms.marker.size[0])
+        self.assertGreater(presentation_bonds.line.width, compact_bonds.line.width)
+
     def test_structure_measurement_overlay_can_be_built(self) -> None:
         measured = create_structure_figure(
             self.atoms,
@@ -94,12 +123,73 @@ class VisualizationTests(unittest.TestCase):
             show_atom_labels=True,
             enable_measurement=True,
             component_id="demo-viewer",
+            model_size_settings=model_size_preset("presentation"),
         )
 
         self.assertIn("$3Dmol", html)
         self.assertIn("demo-viewer-viewer", html)
         self.assertIn("连续点选 2/3/4 个原子后会自动显示距离、键角和二面角", html)
         self.assertIn("data-action='undo'", html)
+        self.assertIn('"radius": 0.22', html)
+        self.assertIn('"scale": 0.33', html)
+
+    def test_structure_viewer_html_uses_visible_hydrogen_color(self) -> None:
+        html = build_structure_viewer_html(
+            self.atoms,
+            representation="ball_stick",
+            component_id="scheme-viewer",
+            visual_style_key="cobalt_amber",
+        )
+
+        self.assertIn("#dce3ec", html)
+        self.assertIn("atom_colors", html)
+
+    def test_pathway_animation_html_contains_controls_and_path_linkage(self) -> None:
+        pathway = PathwayResult(
+            kind="trajectory",
+            points_df=pd.DataFrame(
+                {
+                    "frame_index": [0, 1],
+                    "label": ["0", "1"],
+                    "energy_hartree": [-10.0, -9.8],
+                }
+            ),
+            frames=[
+                PathFrame(index=0, atoms=self.atoms.copy(), label="0"),
+                PathFrame(index=1, atoms=self.atoms.copy(), label="1"),
+            ],
+        )
+
+        html = build_pathway_animation_html(
+            pathway,
+            display_df=pathway.points_df,
+            path_x_col="frame_index",
+            path_y_col="energy_hartree",
+            path_title="Demo path",
+            path_x_label="Frame",
+            path_y_label="Energy",
+            y_hover_format=".2f",
+            y_suffix=" Eh",
+            component_id="demo-path-animation",
+        )
+
+        self.assertIn("demo-path-animation-toggle", html)
+        self.assertIn("demo-path-animation-slider", html)
+        self.assertIn("plotly_click", html)
+        self.assertIn("点击路径点可跳转到对应帧。", html)
+
+    def test_non_default_visual_style_is_registered_on_structure_figure(self) -> None:
+        figure = create_structure_figure(self.atoms, representation="ball_stick", visual_style_key="cobalt_amber")
+        palette = resolve_visual_style("cobalt_amber").palette
+        atom_trace = next(trace for trace in figure.data if trace.name == "_structure_atoms")
+
+        self.assertEqual(figure_visual_style_key(figure), "cobalt_amber")
+        self.assertEqual(figure.layout.paper_bgcolor, "#ffffff")
+        self.assertEqual(atom_trace.marker.color[-1], palette["hydrogen_fill"])
+        self.assertEqual(atom_trace.marker.line.color, palette["atom_outline"])
+
+    def test_legacy_theme_alias_falls_back_to_neutral_scientific_scheme(self) -> None:
+        self.assertEqual(resolve_visual_style("dark_mode").key, "scientific_standard")
 
     def test_structure_hover_is_translated_in_english(self) -> None:
         set_language("en")

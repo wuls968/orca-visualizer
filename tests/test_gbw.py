@@ -37,6 +37,17 @@ class GbwTests(unittest.TestCase):
             self.assertIn("densities", gbw_data.sidecars)
             self.assertEqual(gbw_data.warnings, [])
 
+    def test_sidecar_discovery_can_fall_back_to_unique_out_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            gbw = root / "demo.gbw"
+            out_file = root / "ts.out"
+            gbw.write_bytes(b"gbw")
+            out_file.write_text("ORCA TERMINATED NORMALLY")
+
+            discovered = discover_gbw_sidecars(gbw)
+            self.assertEqual(discovered.get("out"), out_file.resolve())
+
     def test_orca_plot_input_builders(self) -> None:
         electron = build_orca_plot_input("electron_density", grid_intervals=90)
         self.assertIn("1\n2\ny", electron)
@@ -142,6 +153,68 @@ $End
             self.assertEqual(property_summary["lumo_index"], 12)
             self.assertTrue(property_summary["converged"])
             self.assertIn("property.json", gbw_data.metadata["property_summary_sources"])
+
+    def test_property_json_frontier_energies_and_gap_are_exposed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            gbw = root / "demo.gbw"
+            property_json = root / "demo.property.json"
+            gbw.write_bytes(b"gbw")
+            property_json.write_text(
+                json.dumps(
+                    {
+                        "n_alpha": 12,
+                        "n_beta": 12,
+                        "homo_index": 11,
+                        "lumo_index": 12,
+                        "homo_energy_ev": -5.43,
+                        "lumo_energy_ev": -1.12,
+                    }
+                )
+            )
+
+            gbw_data = load_gbw_file(gbw)
+            property_summary = gbw_data.metadata["property_summary"]
+            self.assertAlmostEqual(property_summary["homo_energy_ev"], -5.43)
+            self.assertAlmostEqual(property_summary["lumo_energy_ev"], -1.12)
+            self.assertAlmostEqual(property_summary["homo_lumo_gap_ev"], 4.31)
+
+    def test_out_sidecar_can_supply_frontier_gap_when_property_file_has_only_indices(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            gbw = root / "demo.gbw"
+            property_txt = root / "demo.property.txt"
+            out_file = root / "demo.out"
+            gbw.write_bytes(b"gbw")
+            property_txt.write_text(
+                """
+$DFT_Energy
+   &nAlphaEl [&Type "Integer"] 12
+   &nBetaEl [&Type "Integer"] 12
+$End
+""".strip()
+            )
+            out_file.write_text(
+                """
+----------------
+ORBITAL ENERGIES
+----------------
+
+  NO   OCC          E(Eh)            E(eV)
+   0   2.0000      -0.800000       -21.7691
+   1   2.0000      -0.300000        -8.1634
+   2   0.0000       0.050000         1.3606
+""".strip()
+            )
+
+            gbw_data = load_gbw_file(gbw)
+            property_summary = gbw_data.metadata["property_summary"]
+            self.assertEqual(property_summary["homo_index"], 11)
+            self.assertEqual(property_summary["lumo_index"], 12)
+            self.assertAlmostEqual(property_summary["homo_energy_hartree"], -0.3)
+            self.assertAlmostEqual(property_summary["lumo_energy_hartree"], 0.05)
+            self.assertAlmostEqual(property_summary["homo_lumo_gap_ev"], 9.5240, places=3)
+            self.assertIn("out 轨道能量", gbw_data.metadata["property_summary_sources"])
 
     def test_resolve_property_orbital_index_returns_none_when_missing(self) -> None:
         summary = {"n_alpha": 8, "n_beta": 7}
