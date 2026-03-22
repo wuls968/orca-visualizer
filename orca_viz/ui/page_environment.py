@@ -109,6 +109,20 @@ def render_environment_doctor() -> None:
         )
 
     with tabs[2]:
+        st.markdown(f"**{tr('推荐给普通用户的安装方式')}**")
+        st.caption(tr("如果你已经装好 Node.js 和 Python 3.10 / 3.11 / 3.12，最省事的是直接用 npm 全局安装："))
+        st.code(
+            "\n".join(
+                [
+                    "npm install -g @wuls968/orca-visualizer",
+                    "orca-visualizer",
+                    "orca-visualizer doctor",
+                ]
+            ),
+            language="bash",
+        )
+        st.caption(tr("npm 包不会自带 ORCA；如果要从 GBW 生成 cube，请先在本机安装好 ORCA，并让 `orca` / `orca_plot` 可被检测到。"))
+        st.divider()
         st.markdown(f"**{tr('用户安装')}**")
         st.caption(tr("如果你只想直接使用软件，优先运行下面的一键安装脚本。"))
         install_tabs = st.tabs(["macOS", "Ubuntu / Linux", "Windows", tr("开发者安装")])
@@ -130,7 +144,7 @@ def render_environment_doctor() -> None:
                         "source .venv/bin/activate  # Windows 使用 .\\.venv\\Scripts\\Activate.ps1",
                         "python -m pip install --upgrade pip setuptools wheel",
                         "python -m pip install -r requirements-dev.txt",
-                        "python -m streamlit run app.py",
+                        "python -m orca_viz.cli run",
                     ]
                 ),
                 language="bash",

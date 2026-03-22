@@ -21,6 +21,7 @@ Important:
 - Ship unified figure styling and export presets for `Paper / Presentation / Web`
 - Provide separate 2D/3D export presets, faithful export, paper export, HTML export, and 3D view-aware export controls
 - Show persistent task status for GBW density scanning and cube generation
+- Offer an npm launcher so non-developer users can install and run the app more easily
 - Run on `Windows`, `macOS`, and `Ubuntu/Linux` with launch scripts and CI coverage
 
 ## Platform Support
@@ -120,16 +121,29 @@ Use batch mode to compare multiple ORCA or cube files from:
 
 ## Quick Start
 
-### 1. Clone the Repository
+### 1. Install from npm
 
 ```bash
-git clone https://github.com/wuls968/orca-visualizer.git
-cd orca-visualizer
+npm install -g @wuls968/orca-visualizer
+orca-visualizer
+orca-visualizer doctor
 ```
 
-### 2. End-User Install
+Or run without a global install:
 
-If you mainly want to use the software instead of developing it, prefer the install scripts:
+```bash
+npx @wuls968/orca-visualizer
+```
+
+Notes:
+
+- The npm launcher expects local `Python 3.10 / 3.11 / 3.12`.
+- The npm package does not bundle ORCA itself.
+- To use `GBW -> cube`, `orca_plot`, or local ORCA validation workflows, install ORCA locally first.
+
+### 2. Install from the Repository
+
+If you prefer cloning the repository, or if you want a no-npm install path, use the bundled install scripts:
 
 - macOS: double-click `install_app.command`, then `run_app.command`
 - Ubuntu / Linux:
@@ -163,7 +177,14 @@ The install scripts:
 Before using `GBW -> electron density / spin density / ESP / HOMO / LUMO` workflows, install ORCA locally first.
 The app can read existing ORCA outputs without ORCA, but it cannot call `orca_plot` if ORCA is not installed on the machine.
 
-### 3. Developer Install
+### 3. Clone the Repository
+
+```bash
+git clone https://github.com/wuls968/orca-visualizer.git
+cd orca-visualizer
+```
+
+### 4. Developer Install
 
 For active development, use an editable install so source-code changes apply immediately.
 
@@ -200,7 +221,7 @@ Equivalent developer install command:
 python -m pip install -e ".[dev]"
 ```
 
-### 4. Run the App
+### 5. Run the App
 
 Recommended:
 
@@ -220,6 +241,8 @@ Compatibility entry:
 ```bash
 python -m streamlit run app.py
 ```
+
+The packaged launcher and npm wrapper both route through the same CLI entrypoint. `app.py` remains only as a thin compatibility wrapper.
 
 Platform launchers:
 
@@ -306,7 +329,6 @@ The app tries to auto-detect `orca_plot`. If detection fails, provide the ORCA i
   - select 4 atoms: dihedral
   - click a selected atom again: unselect it
 
-
 ## Testing
 
 Run local verification with:
@@ -325,13 +347,13 @@ Current CI covers:
 
 ## Project Layout
 
-- [app.py](app.py): thin Streamlit entrypoint and routing
+- [app.py](app.py): thin compatibility wrapper for Streamlit launches from a source checkout
 - [pyproject.toml](pyproject.toml): package metadata, runtime dependencies, and CLI entrypoints
 - [orca_viz/parser.py](orca_viz/parser.py): ORCA output parsing
 - [orca_viz/cube.py](orca_viz/cube.py): cube reading and sampling
 - [orca_viz/gbw.py](orca_viz/gbw.py): GBW loading and `orca_plot` workflows
 - [orca_viz/orca_runtime.py](orca_viz/orca_runtime.py): ORCA runtime and utility detection
-- [orca_viz/streamlit_app.py](orca_viz/streamlit_app.py): packaged Streamlit app entrypoint
+- [orca_viz/streamlit_app.py](orca_viz/streamlit_app.py): packaged Streamlit app entrypoint used by the CLI launcher
 - [orca_viz/cli.py](orca_viz/cli.py): CLI launch and environment-doctor commands
 - [orca_viz/visualization.py](orca_viz/visualization.py): figures, 3D viewers, animations
 - [orca_viz/plots](orca_viz/plots): split plotting modules for `structure / spectra / cube / charges / pathways`
@@ -380,7 +402,14 @@ See:
 
 ### 启动方法
 
-通用命令：
+推荐命令：
+
+```bash
+orca-visualizer
+orca-visualizer doctor
+```
+
+兼容的源码运行方式：
 
 ```bash
 python -m streamlit run app.py
@@ -395,7 +424,7 @@ python -m streamlit run app.py
 
 ### GBW 注意事项
 
-如果要从 `.gbw` 生成电子密度、ESP 或轨道 cube，建议准备同名：
+如果要从 `.gbw` 生成电子密度、ESP 或轨道 cube，请先在本机安装好 ORCA，并确保 `orca` / `orca_plot` 可以被软件检测到。建议同时准备同名：
 
 - `.densities`
 - `.densitiesinfo`

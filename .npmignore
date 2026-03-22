@@ -1,0 +1,13 @@
+.github/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+build/
+dist/
+node_modules/
+orca_visualizer.egg-info/
+sample_data/
+tests/
+wuls968-orca-visualizer-*.tgz

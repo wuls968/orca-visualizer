@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented here.
 
+## [0.3.0] - 2026-03-22
+
+### Major Update
+
+- Added an npm distribution wrapper so end users can install and launch ORCA Visualizer with `npm install -g @wuls968/orca-visualizer`
+- Added a GitHub Actions workflow for automated npm publication on GitHub release publication
+- Updated the launcher path so packaged installs run the bundled `orca_viz/streamlit_app.py` entrypoint instead of relying on the repository-root `app.py`
+- Added npm-oriented install guidance to the environment doctor and documentation while keeping the Python install path for developers
+- Cleaned public-facing documentation to remove local desktop validation-bundle references and machine-specific paths
+
+### Validation
+
+- Verified `npm pack --dry-run` for the new npm package layout
+- Re-ran `python -m unittest discover -s tests` after the packaging and launcher changes
+
 ## [0.2.0] - 2026-03-22
 
 ### Major Update
@@ -43,7 +58,7 @@ All notable changes to this project are documented here.
 
 - Re-ran local unit tests with the project virtual environment after the install/runtime refactor
 - Generated new lightweight real-ORCA validation cases on `2026-03-21`
-- Verified parser, path, spectrum, GBW-to-cube, and export workflows with the desktop bundle at `/Users/a0000/Desktop/orca_visualizer_test_cases/20260321_refactor_validation`
+- Verified parser, path, spectrum, GBW-to-cube, and export workflows with local validation bundles
 
 ## [0.1.0] - 2026-03-20
 

@@ -10,7 +10,7 @@ from .orca_runtime import detect_orca_environment, orca_environment_recommendati
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="orca-viz")
+    parser = argparse.ArgumentParser(prog="orca-visualizer")
     subparsers = parser.add_subparsers(dest="command")
 
     run_parser = subparsers.add_parser("run", help="Launch the Streamlit application")
@@ -34,7 +34,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def run_main(streamlit_args: list[str] | None = None) -> int:
-    script_path = Path(__file__).resolve().parents[1] / "app.py"
+    script_path = Path(__file__).resolve().with_name("streamlit_app.py")
     cmd = [sys.executable, "-m", "streamlit", "run", str(script_path)]
     if streamlit_args:
         if streamlit_args and streamlit_args[0] == "--":

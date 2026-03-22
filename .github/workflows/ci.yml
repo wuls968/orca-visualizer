@@ -43,3 +43,19 @@ jobs:
 
       - name: Run unit tests
         run: python -m unittest discover -s tests
+
+  npm-package:
+    name: "npm package"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Validate npm package
+        run: npm pack --dry-run

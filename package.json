@@ -1,0 +1,47 @@
+{
+  "name": "@wuls968/orca-visualizer",
+  "version": "0.3.0",
+  "description": "Cross-platform ORCA post-processing and visualization app with a bundled npm launcher.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wuls968/orca-visualizer.git"
+  },
+  "homepage": "https://github.com/wuls968/orca-visualizer#readme",
+  "bugs": {
+    "url": "https://github.com/wuls968/orca-visualizer/issues"
+  },
+  "keywords": [
+    "orca",
+    "quantum-chemistry",
+    "visualization",
+    "streamlit",
+    "ase",
+    "plotly"
+  ],
+  "bin": {
+    "orca-visualizer": "npm/orca-visualizer.js"
+  },
+  "files": [
+    "LICENSE",
+    "README.md",
+    "app.py",
+    "npm/orca-visualizer.js",
+    "orca_viz/**/*.py",
+    "orca_viz/assets/*.js",
+    "pyproject.toml",
+    "requirements.txt"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}
