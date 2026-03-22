@@ -306,24 +306,6 @@ The app tries to auto-detect `orca_plot`. If detection fails, provide the ORCA i
   - select 4 atoms: dihedral
   - click a selected atom again: unselect it
 
-## Sample Data
-
-Built-in examples are available in:
-
-- [sample_data](sample_data)
-
-Additional real ORCA test cases generated during development are available on the desktop:
-
-- `/Users/a0000/Desktop/orca_visualizer_test_cases`
-- `/Users/a0000/Desktop/orca_visualizer_test_cases/20260321_refactor_validation`
-
-The `20260321_refactor_validation` bundle includes:
-
-- real ORCA `FREQ` output for `H2O`
-- real ORCA `TDDFT/TDA` output for `H2O`
-- real ORCA relaxed `Scan` output for `H2`
-- generated figure exports that validate the new export presets
-- a short validation report and machine-readable summary
 
 ## Testing
 
