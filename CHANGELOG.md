@@ -2,7 +2,26 @@
 
 All notable changes to this project are documented here.
 
-## [Unreleased] - 2026-03-21
+## [0.2.0] - 2026-03-22
+
+### Major Update
+
+- Rebuilt the figure export system around separate 2D vs 3D export presets, preserving the current 3D camera / scene by default instead of resetting the view during export
+- Added export modes for `Faithful Export` vs `Paper Export`, plus 3D view controls such as `current view`, `fit molecule`, `fit surface`, and `paper default`
+- Added `HTML` export for interactive 3D delivery, alongside clearer `SVG / PDF` guidance for WebGL-backed figures
+- Moved export details out of the Streamlit UI layer into a clearer backend so the export controls no longer carry rendering logic directly
+- Tightened CLI and entrypoint consistency so `app.py` remains a thin compatibility wrapper while the packaged launcher uses the unified CLI path
+- Consolidated ORCA executable detection around the shared runtime layer and improved ORCA version detection by probing the executable before falling back to path-name inference
+- Reduced import-time side effects by making static-image export capability checks lazy instead of probing at module import
+- Hardened several ORCA parser entry points against minor heading variations in frequency, charge, TDDFT, and IRC sections
+
+### Validation
+
+- Re-ran `python -m unittest discover -s tests` in the project virtual environment after the export/runtime cleanup
+- Re-verified static PNG export, interactive HTML export, and current-view 3D export retention with local figures
+- Re-verified GBW / cube workflows against local ORCA-installed test files on the desktop machine
+
+## [0.1.1] - 2026-03-21
 
 ### Changed
 

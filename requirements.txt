@@ -4,4 +4,5 @@ numpy
 pandas
 plotly
 psutil
+scikit-image
 streamlit

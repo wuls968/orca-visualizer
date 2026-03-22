@@ -20,6 +20,8 @@ HARTREE_TO_KCAL_MOL = 627.509474
 
 def normalize_gbw_sidecar_name(stem: str, upload_name: str) -> str | None:
     lowered = upload_name.lower()
+    if lowered.endswith(".property.json"):
+        return f"{stem}.property.json"
     if lowered.endswith(".densitiesinfo"):
         return f"{stem}.densitiesinfo"
     if lowered.endswith(".densities"):

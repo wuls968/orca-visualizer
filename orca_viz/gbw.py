@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 from pathlib import Path
 import re
 import shutil
@@ -10,7 +11,7 @@ from typing import Any
 
 from .cube import CubeData, parse_cube_file
 from .i18n import tr
-from .orca_runtime import resolve_orca_executable
+from .orca_runtime import resolve_orca_tool
 
 
 DENSITY_LINE_RE = re.compile(r"^\s*\d+:\s+(\S+)\s*$", re.MULTILINE)
@@ -37,7 +38,10 @@ def load_gbw_file(path: str | Path, source_name: str | None = None) -> GbwData:
         warnings.append(tr("未找到同名 .densities 文件，电子密度/自旋密度/ESP 可能无法生成。"))
     if "densities" in sidecars and "densitiesinfo" not in sidecars:
         warnings.append(tr("已找到 .densities，但缺少 .densitiesinfo；密度或 ESP 生成通常会失败。"))
-    property_summary = _extract_property_summary(sidecars.get("property_txt"))
+    property_summary, property_sources = _extract_property_summary(
+        property_txt_path=sidecars.get("property_txt"),
+        property_json_path=sidecars.get("property_json"),
+    )
     return GbwData(
         source_name=source_name or file_path.name,
         file_path=file_path,
@@ -45,6 +49,7 @@ def load_gbw_file(path: str | Path, source_name: str | None = None) -> GbwData:
         metadata={
             "path": str(file_path),
             "property_summary": property_summary,
+            "property_summary_sources": property_sources,
         },
         warnings=warnings,
     )
@@ -59,14 +64,51 @@ def discover_gbw_sidecars(path: str | Path) -> dict[str, Path]:
         "densitiesinfo": parent / f"{stem}.densitiesinfo",
         "out": parent / f"{stem}.out",
         "log": parent / f"{stem}.log",
+        "property_json": parent / f"{stem}.property.json",
         "property_txt": parent / f"{stem}.property.txt",
         "xyz": parent / f"{stem}.xyz",
     }
     return {key: candidate for key, candidate in candidates.items() if candidate.exists()}
+def resolve_property_orbital_index(
+    property_summary: dict[str, Any],
+    requested_orbital: str,
+    *,
+    operator: int = 0,
+) -> int | None:
+    derived_summary = dict(property_summary)
+    _derive_property_summary(derived_summary)
+    orbital_key = requested_orbital.strip().upper()
+    if orbital_key not in {"HOMO", "LUMO"}:
+        raise ValueError(tr("只支持解析 HOMO 或 LUMO 请求。"))
 
+    specific_key_map = {
+        ("HOMO", 0): "alpha_homo_index",
+        ("LUMO", 0): "alpha_lumo_index",
+        ("HOMO", 1): "beta_homo_index",
+        ("LUMO", 1): "beta_lumo_index",
+    }
+    generic_key_map = {
+        "HOMO": "homo_index",
+        "LUMO": "lumo_index",
+    }
+    candidate_keys = [specific_key_map[(orbital_key, operator)]]
+    if operator == 0:
+        candidate_keys.append(generic_key_map[orbital_key])
 
-def resolve_orca_plot(path_hint: str = "") -> Path | None:
-    return resolve_orca_executable("orca_plot", path_hint=path_hint)
+    for key in candidate_keys:
+        value = derived_summary.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float) and float(value).is_integer():
+            return int(value)
+        if isinstance(value, str):
+            try:
+                return int(value.strip())
+            except ValueError:
+                continue
+    return None
 
 
 def build_orca_plot_input(
@@ -143,7 +185,7 @@ def list_available_densities(
     orca_plot_hint: str = "",
     timeout_seconds: int = 120,
 ) -> list[str]:
-    orca_plot = resolve_orca_plot(orca_plot_hint)
+    orca_plot = resolve_orca_tool("orca_plot", path_hint=orca_plot_hint)
     if orca_plot is None:
         raise FileNotFoundError(tr("未找到 orca_plot。"))
     _ensure_density_sidecars(gbw_data)
@@ -182,7 +224,7 @@ def generate_cube_from_gbw(
     operator: int = 0,
     timeout_seconds: int = 300,
 ) -> tuple[CubeData, dict[str, Any]]:
-    orca_plot = resolve_orca_plot(orca_plot_hint)
+    orca_plot = resolve_orca_tool("orca_plot", path_hint=orca_plot_hint)
     if orca_plot is None:
         raise FileNotFoundError(
             tr("未找到 orca_plot。请在软件中填写 ORCA 安装目录或 orca_plot 可执行文件路径。")
@@ -305,10 +347,30 @@ def _ensure_density_sidecars(gbw_data: GbwData) -> None:
         )
 
 
-def _extract_property_summary(path: Path | None) -> dict[str, Any]:
-    if path is None or not path.exists():
-        return {}
+def _extract_property_summary(
+    *,
+    property_txt_path: Path | None,
+    property_json_path: Path | None,
+) -> tuple[dict[str, Any], list[str]]:
+    summary: dict[str, Any] = {}
+    sources: list[str] = []
+    if property_json_path is not None and property_json_path.exists():
+        json_summary = _extract_property_json_summary(property_json_path)
+        if json_summary:
+            summary.update(json_summary)
+            sources.append("property.json")
+    if property_txt_path is not None and property_txt_path.exists():
+        text_summary = _extract_property_text_summary(property_txt_path)
+        for key, value in text_summary.items():
+            summary.setdefault(key, value)
+        if text_summary:
+            sources.append("property.txt")
 
+    _derive_property_summary(summary)
+    return summary, sources
+
+
+def _extract_property_text_summary(path: Path) -> dict[str, Any]:
     raw_text = path.read_text(encoding="utf-8", errors="ignore")
     summary: dict[str, Any] = {}
     if version := _last_regex_match(raw_text, r'&version \[.*?\]\s+"([^"]+)"'):
@@ -331,19 +393,174 @@ def _extract_property_summary(path: Path | None) -> dict[str, Any]:
         summary["final_energy_hartree"] = final_energy
     if converged is not None:
         summary["converged"] = converged.lower() == "true"
+    return summary
+
+
+def _extract_property_json_summary(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8", errors="ignore"))
+    except json.JSONDecodeError:
+        return {}
+
+    summary: dict[str, Any] = {}
+    scalar_index = _json_scalar_index(payload)
+
+    field_candidates = {
+        "version": ["version", "orca_version"],
+        "atom_count": ["natoms", "atom_count"],
+        "n_alpha": ["nalphael", "n_alpha", "nalpha"],
+        "n_beta": ["nbetael", "n_beta", "nbeta"],
+        "n_total": ["ntotalel", "n_total", "ntotal", "nelectrons", "total_electrons"],
+        "final_energy_hartree": ["finalenergy", "final_energy", "final_single_point_energy"],
+        "converged": ["converged", "is_converged", "calculation_converged"],
+        "homo_index": ["homoindex", "homo_index"],
+        "lumo_index": ["lumoindex", "lumo_index"],
+        "alpha_homo_index": ["alphahomoindex", "alpha_homo_index"],
+        "alpha_lumo_index": ["alphalumoindex", "alpha_lumo_index"],
+        "beta_homo_index": ["betahomoindex", "beta_homo_index"],
+        "beta_lumo_index": ["betalumoindex", "beta_lumo_index"],
+        "multiplicity": ["multiplicity", "spin_multiplicity"],
+    }
+    coercers = {
+        "version": _coerce_string,
+        "atom_count": _coerce_int,
+        "n_alpha": _coerce_int,
+        "n_beta": _coerce_int,
+        "n_total": _coerce_int,
+        "final_energy_hartree": _coerce_float,
+        "converged": _coerce_bool,
+        "homo_index": _coerce_int,
+        "lumo_index": _coerce_int,
+        "alpha_homo_index": _coerce_int,
+        "alpha_lumo_index": _coerce_int,
+        "beta_homo_index": _coerce_int,
+        "beta_lumo_index": _coerce_int,
+        "multiplicity": _coerce_int,
+    }
+
+    for target_key, candidates in field_candidates.items():
+        raw_value = _lookup_json_scalar(scalar_index, candidates)
+        if raw_value is None:
+            continue
+        coerced = coercers[target_key](raw_value)
+        if coerced is not None:
+            summary[target_key] = coerced
+    return summary
+
+
+def _derive_property_summary(summary: dict[str, Any]) -> None:
+    n_alpha = _coerce_int(summary.get("n_alpha"))
+    n_beta = _coerce_int(summary.get("n_beta"))
+    n_total = _coerce_int(summary.get("n_total"))
+
+    if n_alpha is not None:
+        summary["n_alpha"] = n_alpha
+    if n_beta is not None:
+        summary["n_beta"] = n_beta
+    if n_total is not None:
+        summary["n_total"] = n_total
 
     if n_alpha is not None and n_beta is not None:
         summary["multiplicity"] = abs(n_alpha - n_beta) + 1
         summary["closed_shell"] = n_alpha == n_beta
-        summary["alpha_homo_index"] = n_alpha - 1
-        summary["alpha_lumo_index"] = n_alpha
-        summary["beta_homo_index"] = n_beta - 1
-        summary["beta_lumo_index"] = n_beta
+        summary.setdefault("alpha_homo_index", n_alpha - 1)
+        summary.setdefault("alpha_lumo_index", n_alpha)
+        summary.setdefault("beta_homo_index", n_beta - 1)
+        summary.setdefault("beta_lumo_index", n_beta)
         if n_alpha == n_beta:
-            summary["homo_index"] = n_alpha - 1
-            summary["lumo_index"] = n_alpha
+            summary.setdefault("homo_index", n_alpha - 1)
+            summary.setdefault("lumo_index", n_alpha)
 
-    return summary
+
+def _json_scalar_index(payload: Any) -> dict[str, list[Any]]:
+    collected: dict[str, list[Any]] = {}
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                normalized = _normalize_json_key(key)
+                if not isinstance(value, (dict, list)):
+                    collected.setdefault(normalized, []).append(value)
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(payload)
+    return collected
+
+
+def _lookup_json_scalar(index: dict[str, list[Any]], candidates: list[str]) -> Any | None:
+    for candidate in candidates:
+        values = index.get(_normalize_json_key(candidate))
+        if values:
+            return values[-1]
+    return None
+
+
+def _normalize_json_key(raw_key: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", raw_key.lower())
+
+
+def _coerce_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or None
+    return str(value)
+
+
+def _coerce_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if float(value).is_integer() else None
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            return int(stripped)
+        except ValueError:
+            try:
+                numeric = float(stripped)
+            except ValueError:
+                return None
+            return int(numeric) if numeric.is_integer() else None
+    return None
+
+
+def _coerce_float(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            return float(stripped)
+        except ValueError:
+            return None
+    return None
+
+
+def _coerce_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "yes", "1"}:
+            return True
+        if lowered in {"false", "no", "0"}:
+            return False
+    if isinstance(value, (int, float)) and value in {0, 1}:
+        return bool(value)
+    return None
 
 
 def _last_regex_match(raw_text: str, pattern: str) -> str | None:

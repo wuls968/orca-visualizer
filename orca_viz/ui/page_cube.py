@@ -7,10 +7,15 @@ import streamlit as st
 
 from ..cube import (
     CubeData,
+    cube_grid_is_compatible,
+    cube_phase_visibility,
     cube_kind_label,
     cube_sample_dataframe,
     cube_summary_dataframe,
+    find_companion_density_cube_path,
+    parse_cube_file,
     suggest_cube_isovalue,
+    suggest_cube_level_min,
     suggest_cube_level_max,
 )
 from ..i18n import tr
@@ -98,26 +103,99 @@ def render_cube_analysis(cube: CubeData, *, show_page_note: bool = True) -> None
         )
 
     with tabs[2]:
+        esp_surface_cube: CubeData | None = None
+        esp_surface_mode = "default"
+        esp_density_surface_available = False
         if cube_kind == "esp":
-            st.caption(tr("ESP 3D 图采用负势红、正势蓝的半透明等势面，并对正负两侧分别做稳健阈值处理，避免蓝色一侧被核附近尖峰值吞掉。"))
+            companion_path = cube.metadata.get("esp_surface_density_path")
+            if companion_path:
+                companion_candidate = Path(companion_path)
+            else:
+                companion_candidate = find_companion_density_cube_path(cube)
+            if companion_candidate and companion_candidate.exists():
+                try:
+                    parsed_surface_cube = parse_cube_file(companion_candidate)
+                except Exception:
+                    parsed_surface_cube = None
+                if (
+                    parsed_surface_cube is not None
+                    and parsed_surface_cube.metadata.get("cube_kind") in {"electron_density", "density"}
+                    and cube_grid_is_compatible(cube, parsed_surface_cube)
+                ):
+                    esp_surface_cube = parsed_surface_cube
+                    esp_density_surface_available = True
+
+        if cube_kind == "esp":
+            if esp_density_surface_available:
+                st.caption(
+                    tr(
+                        "ESP 3D 图支持两种模式：传统红/蓝等势面，以及更符合化学习惯的“电子密度表面上的 ESP 着色图”。"
+                    )
+                )
+                esp_surface_mode = {
+                    tr("ESP 等势面"): "default",
+                    tr("电子密度表面的 ESP 着色"): "density_surface",
+                }[
+                    st.radio(
+                        tr("ESP 3D 模式"),
+                        [tr("ESP 等势面"), tr("电子密度表面的 ESP 着色")],
+                        horizontal=True,
+                        key=f"{base_key}-esp-surface-mode",
+                    )
+                ]
+                if esp_surface_mode == "density_surface":
+                    st.info(
+                        tr(
+                            "当前 3D 图使用电子密度等值面作为外形，并用 ESP 数值着色；这更接近科研中常见的 MEP on density surface 表达。"
+                        )
+                    )
+                else:
+                    st.caption(
+                        tr(
+                            "ESP 等势面模式采用负势红、正势蓝的半透明表面，并对正负两侧分别做稳健阈值处理，避免蓝色一侧被核附近尖峰值吞掉。"
+                        )
+                    )
+            else:
+                st.caption(tr("ESP 3D 图采用负势红、正势蓝的半透明等势面，并对正负两侧分别做稳健阈值处理，避免蓝色一侧被核附近尖峰值吞掉。"))
+                st.info(tr("若同目录中存在匹配网格的 `.eldens.cube`，这里会自动启用“电子密度表面的 ESP 着色”模式。"))
         elif cube_kind == "orbital":
             st.caption(tr("前线轨道使用分离的正负相位表面，减少颜色混浊和表面锯齿。"))
+        elif cube_kind == "spin_density":
+            st.caption(tr("自旋密度会分开渲染正负两相，便于区分 alpha / beta 自旋富集区域。"))
+        elif cube_kind == "electron_density":
+            st.caption(tr("电子密度默认采用更接近分子外表面的低阈值，并降低表面厚重感，便于科研截图和汇报。"))
         else:
             st.caption(tr("等值面页适合观察轨道形状、电子云范围和正负区域。"))
-        max_level = max(suggest_cube_level_max(cube), 0.01)
-        default_level = suggest_cube_isovalue(cube)
+        level_source_cube = esp_surface_cube if esp_surface_mode == "density_surface" and esp_surface_cube is not None else cube
+        max_level = suggest_cube_level_max(level_source_cube)
+        default_level = suggest_cube_isovalue(level_source_cube)
+        min_level = suggest_cube_level_min(level_source_cube)
+        if max_level <= min_level:
+            max_level = min_level * 1.25
         controls = st.columns(3)
         render_quality = controls[0].selectbox(
             tr("渲染质量"),
             [tr("标准"), tr("精细"), tr("极致")],
-            index=1 if cube_kind in {"esp", "orbital"} else 0,
+            index=2 if cube_kind in {"esp", "orbital", "spin_density"} else 1 if cube_kind == "electron_density" else 0,
             key=f"{base_key}-cube-render-quality",
         )
         surface_opacity = controls[1].slider(
             tr("表面透明度"),
             min_value=0.08,
             max_value=0.95,
-            value=0.20 if cube_kind == "esp" else 0.82 if cube_kind == "orbital" else 0.55,
+            value=(
+                0.76
+                if cube_kind == "esp" and esp_surface_mode == "density_surface"
+                else 0.20
+                if cube_kind == "esp"
+                else 0.82
+                if cube_kind == "orbital"
+                else 0.68
+                if cube_kind == "spin_density"
+                else 0.42
+                if cube_kind == "electron_density"
+                else 0.55
+            ),
             step=0.02,
             key=f"{base_key}-cube-surface-opacity",
         )
@@ -127,18 +205,28 @@ def render_cube_analysis(cube: CubeData, *, show_page_note: bool = True) -> None
             key=f"{base_key}-cube-show-structure",
         )
         level = st.slider(
-            tr("等值面阈值"),
-            min_value=0.001,
+            tr("表面密度阈值") if cube_kind == "esp" and esp_surface_mode == "density_surface" else tr("等值面阈值"),
+            min_value=min_level,
             max_value=max_level,
-            value=min(max(default_level, 0.01), max_level),
+            value=min(max(default_level, min_level), max_level),
             key=f"{base_key}-iso-level",
         )
+        phase_visibility = cube_phase_visibility(cube, level)
+        if cube_kind in {"orbital", "esp", "spin_density"} and esp_surface_mode != "density_surface" and phase_visibility["single_phase"]:
+            if phase_visibility["positive"]:
+                st.warning(tr("当前阈值只显示正相位/正符号一侧；如果你希望同时看到两侧，请适当降低等值面阈值。"))
+            elif phase_visibility["negative"]:
+                st.warning(tr("当前阈值只显示负相位/负符号一侧；如果你希望同时看到两侧，请适当降低等值面阈值。"))
+        elif cube_kind in {"orbital", "esp", "spin_density"} and esp_surface_mode != "density_surface" and phase_visibility["empty"]:
+            st.warning(tr("当前阈值过高，正负两侧都没有可见等值面，请降低阈值。"))
         isosurface_figure = create_cube_isosurface_figure(
             cube,
             level=level,
             quality=render_quality,
             show_structure=show_structure,
             opacity=surface_opacity,
+            surface_mode=esp_surface_mode,
+            surface_cube=esp_surface_cube,
         )
         render_plotly_chart(
             isosurface_figure,

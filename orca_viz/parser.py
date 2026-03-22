@@ -24,6 +24,25 @@ ABSORPTION_STATE_RE = re.compile(
 ABSORPTION_TRANSITION_RE = re.compile(
     r"^\s*\S+\s*->\s*\S+\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)"
 )
+FREQUENCY_BLOCK_MARKERS = ("VIBRATIONAL FREQUENCIES",)
+NORMAL_MODE_BLOCK_MARKERS = ("NORMAL MODES",)
+MULLIKEN_HEADERS = (
+    "MULLIKEN ATOMIC CHARGES",
+    "MULLIKEN ATOMIC CHARGES AND SPIN POPULATIONS",
+)
+LOEWDIN_HEADERS = (
+    "LOEWDIN ATOMIC CHARGES",
+    "LOEWDIN ATOMIC CHARGES AND SPIN POPULATIONS",
+)
+ABSORPTION_HEADERS = (
+    "ABSORPTION SPECTRUM VIA TRANSITION ELECTRIC DIPOLE MOMENTS",
+    "ABSORPTION SPECTRUM VIA TRANSITION VELOCITY DIPOLE MOMENTS",
+    "ABSORPTION SPECTRUM",
+)
+IRC_HEADERS = (
+    "IRC PATH SUMMARY",
+    "INTRINSIC REACTION COORDINATE",
+)
 
 
 @dataclass
@@ -90,8 +109,8 @@ def parse_orca_content(raw_text: str, source_name: str = "uploaded_file") -> Orc
     result.frequencies_cm1 = _extract_frequencies(lines)
     result.atoms = _extract_last_cartesian_block(lines)
     result.normal_modes = _extract_normal_modes(lines, result.atom_count, len(result.frequencies_cm1))
-    result.mulliken_charges = _extract_charge_block(lines, "MULLIKEN ATOMIC CHARGES")
-    result.loewdin_charges = _extract_charge_block(lines, "LOEWDIN ATOMIC CHARGES")
+    result.mulliken_charges = _extract_charge_block(lines, MULLIKEN_HEADERS)
+    result.loewdin_charges = _extract_charge_block(lines, LOEWDIN_HEADERS)
     result.excited_states = _extract_excited_states(lines)
     result.irc_points = _extract_irc_points(lines)
     result.neb_points = _extract_neb_points(lines)
@@ -156,10 +175,10 @@ def _extract_frequencies(lines: list[str]) -> list[float]:
     frequencies: list[float] = []
     in_block = False
     for line in lines:
-        if "VIBRATIONAL FREQUENCIES" in line:
+        if _contains_any_marker(line, FREQUENCY_BLOCK_MARKERS):
             in_block = True
             continue
-        if in_block and line.strip().startswith("NORMAL MODES"):
+        if in_block and _contains_any_marker(line, NORMAL_MODE_BLOCK_MARKERS):
             break
         if in_block:
             match = FREQUENCY_RE.match(line)
@@ -168,12 +187,13 @@ def _extract_frequencies(lines: list[str]) -> list[float]:
     return frequencies
 
 
-def _extract_charge_block(lines: list[str], header: str) -> pd.DataFrame:
+def _extract_charge_block(lines: list[str], headers: str | tuple[str, ...]) -> pd.DataFrame:
     records: list[dict[str, Any]] = []
     in_block = False
+    header_values = (headers,) if isinstance(headers, str) else headers
 
     for line in lines:
-        if header in line:
+        if _contains_any_marker(line, header_values):
             records = []
             in_block = True
             continue
@@ -204,7 +224,10 @@ def _extract_charge_block(lines: list[str], header: str) -> pd.DataFrame:
 def _extract_normal_modes(
     lines: list[str], atom_count: int, frequency_count: int
 ) -> dict[int, np.ndarray]:
-    start_index = next((i for i, line in enumerate(lines) if "NORMAL MODES" in line), None)
+    start_index = next(
+        (i for i, line in enumerate(lines) if _contains_any_marker(line, NORMAL_MODE_BLOCK_MARKERS)),
+        None,
+    )
     if start_index is None or atom_count <= 0:
         return {}
 
@@ -264,7 +287,7 @@ def _extract_excited_states(lines: list[str]) -> pd.DataFrame:
     records: list[dict[str, Any]] = []
     in_block = False
     for line in lines:
-        if "ABSORPTION SPECTRUM VIA TRANSITION ELECTRIC DIPOLE MOMENTS" in line:
+        if _contains_any_marker(line, ABSORPTION_HEADERS):
             records = []
             in_block = True
             continue
@@ -309,7 +332,7 @@ def _extract_irc_points(lines: list[str]) -> pd.DataFrame:
     records: list[dict[str, Any]] = []
     in_block = False
     for line in lines:
-        if "IRC PATH SUMMARY" in line or "INTRINSIC REACTION COORDINATE" in line:
+        if _contains_any_marker(line, IRC_HEADERS):
             in_block = True
             continue
         if not in_block:
@@ -593,3 +616,8 @@ def _extract_input_keywords(lines: list[str]) -> str:
         if line.strip().startswith("!"):
             return line.strip()
     return ""
+
+
+def _contains_any_marker(line: str, markers: tuple[str, ...]) -> bool:
+    upper = line.upper()
+    return any(marker in upper for marker in markers)

@@ -118,7 +118,7 @@ def _render_single_mode() -> None:
         local_path = st.text_input(tr("或输入本地文件路径"), key="single_path")
         gbw_sidecar_uploads = st.file_uploader(
             tr("GBW 可选：上传 sidecar 文件"),
-            type=["densities", "densitiesinfo", "xyz", "out", "log", "txt"],
+            type=["densities", "densitiesinfo", "xyz", "out", "log", "txt", "json"],
             accept_multiple_files=True,
             key="single_gbw_sidecars",
         )

@@ -171,29 +171,63 @@ def suggest_cube_isovalue(cube: CubeData) -> float:
 
     max_abs = float(np.max(abs_values))
     if kind == "orbital":
-        suggested = float(np.quantile(abs_values, 0.92))
-        return min(max(suggested, max_abs * 0.08), max_abs * 0.35)
+        suggested = float(np.quantile(abs_values, 0.78))
+        lower = max(float(np.quantile(abs_values, 0.55)) * 0.55, max_abs * 0.004, 5e-4)
+        upper = max(max_abs * 0.12, lower * 1.5)
+        return min(max(suggested, lower), upper)
     if kind == "esp":
         positive = values[values > 1e-9]
         negative = np.abs(values[values < -1e-9])
         if positive.size and negative.size:
             suggested = min(
-                float(np.quantile(positive, 0.90)),
-                float(np.quantile(negative, 0.90)),
+                float(np.quantile(positive, 0.84)),
+                float(np.quantile(negative, 0.84)),
             )
             upper = max(
                 float(np.quantile(positive, 0.97)),
                 float(np.quantile(negative, 0.97)),
             )
-            return min(max(suggested, 0.001), max(upper * 0.85, 0.01))
+            return min(max(suggested, 0.001), max(upper * 0.82, 0.02))
         suggested = float(np.quantile(abs_values, 0.82))
-        return min(max(suggested, max_abs * 0.05), max_abs * 0.28)
-    if kind in {"electron_density", "spin_density", "density"}:
+        return min(max(suggested, max_abs * 0.002), max_abs * 0.22)
+    if kind == "electron_density":
+        positive = values[values > 1e-12]
+        if positive.size == 0:
+            return 0.002
+        suggested = float(np.quantile(positive, 0.90))
+        lower = max(float(np.quantile(positive, 0.80)) * 0.7, 2e-4)
+        upper = max(float(np.quantile(positive, 0.965)), lower * 1.6, 0.003)
+        return min(max(suggested, lower), upper)
+    if kind == "spin_density":
+        positive = values[values > 1e-9]
+        negative = np.abs(values[values < -1e-9])
+        phase_samples = [sample for sample in (positive, negative) if sample.size]
+        if phase_samples:
+            suggested = min(float(np.quantile(sample, 0.80)) for sample in phase_samples)
+            lower = max(min(float(np.quantile(sample, 0.62)) for sample in phase_samples) * 0.7, 5e-4)
+            upper = max(max(float(np.quantile(sample, 0.97)) for sample in phase_samples), lower * 1.8)
+            return min(max(suggested, lower), upper)
+        suggested = float(np.quantile(abs_values, 0.82))
+        return min(max(suggested, max_abs * 0.01), max_abs * 0.22)
+    if kind == "density":
         positive = abs_values[abs_values > 0]
         suggested = float(np.quantile(positive, 0.88))
-        return min(max(suggested, max_abs * 0.04), max_abs * 0.22)
+        return max(suggested, 5e-4)
     suggested = float(np.quantile(abs_values, 0.85))
-    return min(max(suggested, max_abs * 0.05), max_abs * 0.25)
+    return min(max(suggested, max_abs * 0.002), max_abs * 0.25)
+
+
+def suggest_cube_level_min(cube: CubeData) -> float:
+    kind = cube.metadata.get("cube_kind", "generic")
+    default_level = suggest_cube_isovalue(cube)
+    max_level = suggest_cube_level_max(cube)
+    if max_level <= 0:
+        return 1e-4
+    if kind == "electron_density":
+        return max(min(default_level * 0.35, max_level * 0.25), 5e-5)
+    if kind == "spin_density":
+        return max(min(default_level * 0.3, max_level * 0.25), 1e-4)
+    return max(min(default_level * 0.25, max_level * 0.4), 1e-5)
 
 
 def suggest_cube_level_max(cube: CubeData) -> float:
@@ -216,8 +250,15 @@ def suggest_cube_level_max(cube: CubeData) -> float:
         return max(min(max_abs, 0.5), 0.05)
     if kind == "orbital":
         return max(float(np.quantile(abs_values, 0.995)), suggest_cube_isovalue(cube) * 1.8, 0.03)
-    if kind in {"electron_density", "spin_density", "density"}:
-        return max(float(np.quantile(abs_values, 0.99)), suggest_cube_isovalue(cube) * 2.0, 0.03)
+    if kind == "electron_density":
+        positive = values[values > 1e-12]
+        if positive.size == 0:
+            return 0.02
+        return max(float(np.quantile(positive, 0.985)), suggest_cube_isovalue(cube) * 2.8, 0.01)
+    if kind == "spin_density":
+        return max(float(np.quantile(abs_values, 0.992)), suggest_cube_isovalue(cube) * 2.4, 0.01)
+    if kind == "density":
+        return max(float(np.quantile(abs_values, 0.99)), suggest_cube_isovalue(cube) * 2.0, 0.01)
     return max(min(max_abs, float(np.quantile(abs_values, 0.995))), suggest_cube_isovalue(cube) * 2.0, 0.05)
 
 
@@ -244,6 +285,58 @@ def esp_signed_surface_levels(cube: CubeData, base_level: float) -> dict[str, fl
             float(np.quantile(negative, 0.985)),
         )
     return levels
+
+
+def cube_phase_visibility(cube: CubeData, level: float) -> dict[str, bool]:
+    values, _ = _cube_value_arrays(cube)
+    if values.size == 0:
+        return {"positive": False, "negative": False, "single_phase": False, "empty": True}
+
+    threshold = abs(level)
+    positive_visible = bool(np.max(values) >= threshold)
+    negative_visible = bool(np.min(values) <= -threshold)
+    return {
+        "positive": positive_visible,
+        "negative": negative_visible,
+        "single_phase": positive_visible ^ negative_visible,
+        "empty": not positive_visible and not negative_visible,
+    }
+
+
+def cube_grid_is_compatible(left: CubeData, right: CubeData, tolerance: float = 1e-6) -> bool:
+    return (
+        left.grid_shape == right.grid_shape
+        and np.allclose(left.origin_angstrom, right.origin_angstrom, atol=tolerance, rtol=0.0)
+        and np.allclose(left.axis_vectors_angstrom, right.axis_vectors_angstrom, atol=tolerance, rtol=0.0)
+    )
+
+
+def find_companion_density_cube_path(cube: CubeData) -> Path | None:
+    path_text = cube.metadata.get("path")
+    if not path_text:
+        return None
+    cube_path = Path(path_text)
+    if not cube_path.exists():
+        return None
+
+    candidates: list[Path] = []
+    if cube.metadata.get("cube_kind") == "esp":
+        name = cube_path.name
+        if name.lower().endswith(".esp.cube"):
+            prefix = name[: -len(".esp.cube")]
+            candidates.append(cube_path.with_name(f"{prefix}.eldens.cube"))
+            if "." in prefix:
+                base_prefix = prefix.split(".", 1)[0]
+                candidates.append(cube_path.with_name(f"{base_prefix}.eldens.cube"))
+        candidates.extend(sorted(cube_path.parent.glob("*.eldens.cube")))
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if candidate in seen or not candidate.exists():
+            continue
+        seen.add(candidate)
+        return candidate
+    return None
 
 
 def _cube_value_arrays(cube: CubeData) -> tuple[np.ndarray, np.ndarray]:

@@ -1,8 +1,14 @@
 from pathlib import Path
+import json
 import tempfile
 import unittest
 
-from orca_viz.gbw import build_orca_plot_input, discover_gbw_sidecars, load_gbw_file
+from orca_viz.gbw import (
+    build_orca_plot_input,
+    discover_gbw_sidecars,
+    load_gbw_file,
+    resolve_property_orbital_index,
+)
 
 
 class GbwTests(unittest.TestCase):
@@ -12,15 +18,18 @@ class GbwTests(unittest.TestCase):
             gbw = root / "demo.gbw"
             densities = root / "demo.densities"
             densitiesinfo = root / "demo.densitiesinfo"
+            property_json = root / "demo.property.json"
             property_txt = root / "demo.property.txt"
             gbw.write_bytes(b"gbw")
             densities.write_bytes(b"dens")
             densitiesinfo.write_bytes(b"densinfo")
+            property_json.write_text("{}")
             property_txt.write_text("properties")
 
             discovered = discover_gbw_sidecars(gbw)
             self.assertIn("densities", discovered)
             self.assertIn("densitiesinfo", discovered)
+            self.assertIn("property_json", discovered)
             self.assertIn("property_txt", discovered)
 
             gbw_data = load_gbw_file(gbw)
@@ -87,6 +96,60 @@ $End
             self.assertEqual(property_summary["homo_index"], 36)
             self.assertEqual(property_summary["lumo_index"], 37)
             self.assertTrue(property_summary["converged"])
+
+    def test_property_json_takes_priority_when_available(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            gbw = root / "demo.gbw"
+            densities = root / "demo.densities"
+            densitiesinfo = root / "demo.densitiesinfo"
+            property_txt = root / "demo.property.txt"
+            property_json = root / "demo.property.json"
+            gbw.write_bytes(b"gbw")
+            densities.write_bytes(b"dens")
+            densitiesinfo.write_bytes(b"densinfo")
+            property_txt.write_text(
+                """
+$Calculation_Status
+   &version [&Type "String"] "6.0.0"
+$End
+$DFT_Energy
+   &nAlphaEl [&Type "Integer"] 10
+   &nBetaEl [&Type "Integer"] 10
+$End
+""".strip()
+            )
+            property_json.write_text(
+                json.dumps(
+                    {
+                        "version": "6.1.1",
+                        "nAlphaEl": 12,
+                        "nBetaEl": 12,
+                        "FinalEnergy": -123.456789,
+                        "Converged": True,
+                        "homo_index": 11,
+                        "lumo_index": 12,
+                    }
+                )
+            )
+
+            gbw_data = load_gbw_file(gbw)
+            property_summary = gbw_data.metadata["property_summary"]
+            self.assertEqual(property_summary["version"], "6.1.1")
+            self.assertEqual(property_summary["n_alpha"], 12)
+            self.assertEqual(property_summary["n_beta"], 12)
+            self.assertEqual(property_summary["homo_index"], 11)
+            self.assertEqual(property_summary["lumo_index"], 12)
+            self.assertTrue(property_summary["converged"])
+            self.assertIn("property.json", gbw_data.metadata["property_summary_sources"])
+
+    def test_resolve_property_orbital_index_returns_none_when_missing(self) -> None:
+        summary = {"n_alpha": 8, "n_beta": 7}
+        self.assertEqual(resolve_property_orbital_index(summary, "HOMO", operator=0), 7)
+        self.assertEqual(resolve_property_orbital_index(summary, "LUMO", operator=0), 8)
+        self.assertEqual(resolve_property_orbital_index(summary, "HOMO", operator=1), 6)
+        self.assertEqual(resolve_property_orbital_index(summary, "LUMO", operator=1), 7)
+        self.assertIsNone(resolve_property_orbital_index({}, "HOMO", operator=0))
 
 
 if __name__ == "__main__":

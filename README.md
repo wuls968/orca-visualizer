@@ -4,6 +4,11 @@ Cross-platform ORCA post-processing and visualization software built with `Pytho
 
 支持 `macOS / Ubuntu / Windows` 的 ORCA 结果处理与可视化软件，面向本地科研工作流，覆盖输出解析、结构显示、谱图、路径、cube、GBW 和后台驻留任务检测。
 
+Important:
+
+- For pure viewing of existing `.out / .log / .xyz / .cube` files, ORCA itself is not required.
+- For `GBW -> cube`, local validation, and ORCA tool/environment checks, you should install ORCA on the same machine and make `orca` / `orca_plot` available.
+
 ## Highlights
 
 - Parse `.out`, `.log`, `.txt`, `.xyz`, `.cube`, and `.gbw`
@@ -14,6 +19,7 @@ Cross-platform ORCA post-processing and visualization software built with `Pytho
 - Include a cross-platform background-process monitor for ORCA / Python / Streamlit jobs
 - Provide a card-based landing page and clearer upload-before/upload-after states
 - Ship unified figure styling and export presets for `Paper / Presentation / Web`
+- Provide separate 2D/3D export presets, faithful export, paper export, HTML export, and 3D view-aware export controls
 - Show persistent task status for GBW density scanning and cube generation
 - Run on `Windows`, `macOS`, and `Ubuntu/Linux` with launch scripts and CI coverage
 
@@ -71,11 +77,26 @@ This matrix is verified in GitHub Actions:
 - `Presentation`: 16:9 layout and larger labels for slide decks
 - `Web`: lighter canvas for browser previews and screenshots
 
+Export modes:
+
+- `Faithful Export`: preserve the current figure as much as possible and only adjust size / scale / explicit toggles
+- `Paper Export`: keep the current 2D/3D view while normalizing typography, margins, and background for publication use
+
+3D-specific export controls:
+
+- `current view`
+- `fit molecule`
+- `fit surface`
+- `paper default`
+- `hide axes / legend / colorbar`
+- `tight crop / balanced margin`
+
 Supported export targets:
 
 - `PNG`
 - `SVG`
 - `PDF`
+- `HTML` for interactive 3D delivery
 
 ## Screens and Data Types
 
@@ -139,6 +160,9 @@ The install scripts:
 - install the packaged app with `pip install .`
 - keep the launch path short for non-developer users
 
+Before using `GBW -> electron density / spin density / ESP / HOMO / LUMO` workflows, install ORCA locally first.
+The app can read existing ORCA outputs without ORCA, but it cannot call `orca_plot` if ORCA is not installed on the machine.
+
 ### 3. Developer Install
 
 For active development, use an editable install so source-code changes apply immediately.
@@ -178,16 +202,23 @@ python -m pip install -e ".[dev]"
 
 ### 4. Run the App
 
-Generic:
-
-```bash
-python -m streamlit run app.py
-```
-
-After the packaged end-user install, the CLI launcher is also available:
+Recommended:
 
 ```bash
 orca-visualizer
+orca-visualizer doctor
+```
+
+Developer-friendly:
+
+```bash
+python -m orca_viz.cli run
+```
+
+Compatibility entry:
+
+```bash
+python -m streamlit run app.py
 ```
 
 Platform launchers:
@@ -206,6 +237,7 @@ It checks:
 - Python runtime and package versions
 - `ORCA_HOME`
 - auto-detected ORCA version from installation paths
+- version probing from the `orca` executable when possible, with path-based fallback
 - whether key ORCA utilities are usable, including:
   - `orca`
   - `orca_plot`
@@ -234,19 +266,35 @@ When no manual path is provided, the detector searches:
 - login-shell `PATH` and `ORCA_HOME`
 - common ORCA installation directories on Windows / macOS / Ubuntu
 
+If ORCA is installed locally, this page is also the fastest way to confirm whether `orca`, `orca_plot`, and related tools are really callable by the app instead of only existing somewhere on disk.
+
 ## ORCA and GBW Notes
 
 If you want GBW-derived density or orbital cubes, install ORCA and make sure `orca_plot` is available.
+
+In practice this means:
+
+- install ORCA locally on the machine where ORCA Visualizer runs
+- ensure `orca` and `orca_plot` are reachable through `ORCA_HOME` or `PATH`
+- then use the `Environment Doctor` page to verify detection before starting GBW workflows
 
 Recommended GBW sidecar files:
 
 - `.densities`
 - `.densitiesinfo`
+- `.property.json`
 - `.property.txt`
 - `.xyz`
 - `.out` or `.log`
 
 The app tries to auto-detect `orca_plot`. If detection fails, provide the ORCA installation directory or executable path in the UI.
+
+## Export Notes
+
+- 2D and 3D figures now use different default export sizes.
+- 3D export keeps the current camera / scene by default instead of resetting to a generic view.
+- `SVG` / `PDF` export is still useful for 2D figures, but Plotly WebGL-based 3D layers are typically rasterized there.
+- For high-quality interactive 3D sharing or archival, prefer `HTML`.
 
 ## Structure Viewer Notes
 

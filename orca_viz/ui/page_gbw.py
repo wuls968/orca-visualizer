@@ -6,8 +6,14 @@ import pandas as pd
 import streamlit as st
 
 from ..cube import parse_cube_file
-from ..gbw import GbwData, generate_cube_from_gbw, list_available_densities, resolve_orca_plot
+from ..gbw import (
+    GbwData,
+    generate_cube_from_gbw,
+    list_available_densities,
+    resolve_property_orbital_index,
+)
 from ..i18n import tr
+from ..orca_runtime import resolve_orca_tool
 from .common import render_page_note, render_task_state, set_task_state, slug_key
 from .page_cube import render_cube_analysis
 
@@ -19,7 +25,7 @@ def render_gbw_analysis(gbw_data: GbwData) -> None:
         tr("GBW 页面说明"),
         [
             tr("最少需要 `.gbw`；生成电子密度、自旋密度和 ESP 通常还需要同名 `.densities` 与 `.densitiesinfo`。"),
-            tr("如果有 `.property.txt`，软件会自动给出电子数、HOMO/LUMO 建议和收敛信息。"),
+            tr("如果有 `.property.json` 或 `.property.txt`，软件会自动给出电子数、HOMO/LUMO 建议和收敛信息。"),
             tr("如果有 `.xyz`，生成出的 cube 会自动叠加参考结构；上传 sidecar 时建议使用同 stem 文件名。"),
         ],
     )
@@ -28,16 +34,18 @@ def render_gbw_analysis(gbw_data: GbwData) -> None:
 
     render_task_state(task_key)
 
-    detected_orca_plot = resolve_orca_plot()
+    detected_orca_plot = resolve_orca_tool("orca_plot")
     property_summary = gbw_data.metadata.get("property_summary", {})
-    summary_cols = st.columns(6)
+    property_sources = gbw_data.metadata.get("property_summary_sources", [])
+    summary_cols = st.columns(7)
     yes_no = lambda flag: tr("是") if flag else tr("否")
     summary_cols[0].metric(tr("文件"), gbw_data.source_name)
     summary_cols[1].metric(tr("有 .densities"), yes_no("densities" in gbw_data.sidecars))
     summary_cols[2].metric(tr("有 .densitiesinfo"), yes_no("densitiesinfo" in gbw_data.sidecars))
-    summary_cols[3].metric(tr("有 property.txt"), yes_no("property_txt" in gbw_data.sidecars))
-    summary_cols[4].metric(tr("有 .xyz"), yes_no("xyz" in gbw_data.sidecars))
-    summary_cols[5].metric(tr("检测到 orca_plot"), yes_no(bool(detected_orca_plot)))
+    summary_cols[3].metric(tr("有 property.json"), yes_no("property_json" in gbw_data.sidecars))
+    summary_cols[4].metric(tr("有 property.txt"), yes_no("property_txt" in gbw_data.sidecars))
+    summary_cols[5].metric(tr("有 .xyz"), yes_no("xyz" in gbw_data.sidecars))
+    summary_cols[6].metric(tr("检测到 orca_plot"), yes_no(bool(detected_orca_plot)))
     if not detected_orca_plot:
         st.info(tr("如果这里没有检测到 `orca_plot`，可切到“环境检测”页查看 ORCA 工具可用性与安装建议。"))
 
@@ -48,6 +56,7 @@ def render_gbw_analysis(gbw_data: GbwData) -> None:
                 "sidecars": {key: str(value) for key, value in gbw_data.sidecars.items()},
                 "detected_orca_plot": str(detected_orca_plot) if detected_orca_plot else None,
                 "property_summary": property_summary or None,
+                "property_summary_sources": property_sources or None,
             }
         )
 
@@ -139,6 +148,13 @@ def render_gbw_analysis(gbw_data: GbwData) -> None:
                 property_rows.append((label, value))
         if property_rows:
             st.subheader(tr("Property 摘要"))
+            if property_sources:
+                st.caption(
+                    tr(
+                        "Property 数据来源：{sources}",
+                        sources=", ".join(property_sources),
+                    )
+                )
             st.dataframe(
                 pd.DataFrame(property_rows, columns=[tr("字段"), tr("值")]),
                 hide_index=True,
@@ -170,7 +186,7 @@ def render_gbw_analysis(gbw_data: GbwData) -> None:
     orbital_index: int | None = None
     operator = 0
     disabled_reason = ""
-    spin_density_available = any(name.lower().endswith(".scfr") for name in available_densities)
+    generate_density_surface_companion = False
 
     if not orca_plot_hint.strip():
         disabled_reason = tr("当前没有可用的 `orca_plot` 路径，无法从 gbw 生成 cube。")
@@ -192,13 +208,8 @@ def render_gbw_analysis(gbw_data: GbwData) -> None:
             "densities" not in gbw_data.sidecars or "densitiesinfo" not in gbw_data.sidecars
         ):
             disabled_reason = tr("密度或 ESP 生成功能需要同名 `.densities` 与 `.densitiesinfo`。")
-        elif (
-            not disabled_reason
-            and plot_kind == "spin_density"
-            and available_densities
-            and not spin_density_available
-        ):
-            disabled_reason = tr("当前 density 列表里没有检测到 `.scfr` 自旋密度。")
+        elif plot_kind == "spin_density" and property_summary.get("closed_shell") is True:
+            st.info(tr("当前 property 信息显示为 closed-shell；自旋密度通常会接近零，但仍可继续生成检查。"))
 
         if plot_kind == "electrostatic_potential":
             default_density = next(
@@ -218,8 +229,13 @@ def render_gbw_analysis(gbw_data: GbwData) -> None:
                     value=default_density,
                     key=f"{base_key}-gbw-density-name",
                 )
+            generate_density_surface_companion = st.checkbox(
+                tr("同时生成电子密度表面（用于 ESP 着色图）"),
+                value=True,
+                key=f"{base_key}-gbw-generate-esp-density-surface",
+            )
     else:
-        st.caption(tr("轨道模式只需要 `.gbw`；HOMO/LUMO 建议值优先来自 `.property.txt`，前线轨道建议 120-160 网格。"))
+        st.caption(tr("轨道模式只需要 `.gbw`；HOMO/LUMO 建议值优先来自 `.property.json` / `.property.txt`，前线轨道建议 120-160 网格。"))
         orbital_mode_options = {
             "HOMO": "HOMO",
             "LUMO": "LUMO",
@@ -242,24 +258,50 @@ def render_gbw_analysis(gbw_data: GbwData) -> None:
             )
             operator = 0 if operator_label == "alpha / closed shell" else 1
 
-        if orbital_mode_options[orbital_mode] == "HOMO":
-            suggested_key = "homo_index" if operator == 0 else "beta_homo_index"
-            orbital_index = property_summary.get(suggested_key)
-        elif orbital_mode_options[orbital_mode] == "LUMO":
-            suggested_key = "lumo_index" if operator == 0 else "beta_lumo_index"
-            orbital_index = property_summary.get(suggested_key)
+        requested_orbital = orbital_mode_options[orbital_mode]
+        resolved_orbital_index: int | None = None
+        if requested_orbital in {"HOMO", "LUMO"}:
+            resolved_orbital_index = resolve_property_orbital_index(
+                property_summary,
+                requested_orbital,
+                operator=operator,
+            )
+            if not disabled_reason and resolved_orbital_index is None:
+                disabled_reason = tr(
+                    "当前无法从 `.property.json` / `.property.txt` 解析出 {requested_orbital} 编号，请切换到“自定义”后手动输入。",
+                    requested_orbital=requested_orbital,
+                )
+        else:
+            custom_index_raw = st.text_input(
+                tr("轨道编号"),
+                value="",
+                placeholder=tr("请输入非负轨道编号"),
+                key=f"{base_key}-gbw-orbital-index",
+            ).strip()
+            if not custom_index_raw:
+                if not disabled_reason:
+                    disabled_reason = tr("请先手动输入要生成的轨道编号。")
+            else:
+                try:
+                    parsed_custom_index = int(custom_index_raw)
+                except ValueError:
+                    if not disabled_reason:
+                        disabled_reason = tr("轨道编号必须是非负整数。")
+                else:
+                    if parsed_custom_index < 0:
+                        if not disabled_reason:
+                            disabled_reason = tr("轨道编号必须是非负整数。")
+                    else:
+                        resolved_orbital_index = parsed_custom_index
 
-        if orbital_mode_options[orbital_mode] != "custom" and orbital_index is None:
-            st.caption(tr("当前没有可用于自动推断 HOMO/LUMO 的 property 信息，请手动填写轨道编号。"))
-
-        default_index = orbital_index if orbital_index is not None else 0
-        orbital_index = st.number_input(
-            tr("轨道编号"),
-            min_value=0,
-            step=1,
-            value=int(default_index),
-            key=f"{base_key}-gbw-orbital-index",
+        orbital_index = resolved_orbital_index
+        display_cols = st.columns(3)
+        display_cols[0].metric(tr("Requested orbital"), requested_orbital)
+        display_cols[1].metric(
+            tr("Resolved orbital index"),
+            tr("未解析到") if resolved_orbital_index is None else str(resolved_orbital_index),
         )
+        display_cols[2].metric(tr("Operator"), "alpha / closed shell" if operator == 0 else "beta")
         plot_kind = "molecular_orbital"
 
     if disabled_reason:
@@ -292,7 +334,23 @@ def render_gbw_analysis(gbw_data: GbwData) -> None:
                 orbital_index=int(orbital_index) if orbital_index is not None else None,
                 operator=operator,
             )
+            companion_density_path = ""
+            if plot_kind == "electrostatic_potential" and generate_density_surface_companion:
+                density_cube, density_run_info = generate_cube_from_gbw(
+                    gbw_data,
+                    plot_kind="electron_density",
+                    orca_plot_hint=orca_plot_hint,
+                    grid_intervals=grid_intervals,
+                )
+                companion_density_path = density_cube.metadata.get("path", "")
+                if companion_density_path:
+                    cube.metadata["esp_surface_density_path"] = companion_density_path
+                run_info["density_surface_cube"] = density_run_info.get("generated_cube")
+            if plot_kind == "molecular_orbital":
+                run_info["requested_orbital"] = requested_orbital
+                run_info["resolved_orbital_index"] = orbital_index
             st.session_state[f"{base_key}-gbw-cube-path"] = cube.metadata.get("path")
+            st.session_state[f"{base_key}-gbw-esp-surface-density-path"] = companion_density_path
             st.session_state[f"{base_key}-gbw-run-info"] = run_info
             set_task_state(
                 task_key,
@@ -333,4 +391,7 @@ def render_gbw_analysis(gbw_data: GbwData) -> None:
     if cube_path:
         cube = parse_cube_file(cube_path)
         cube.source_name = Path(cube_path).name
+        companion_density_path = st.session_state.get(f"{base_key}-gbw-esp-surface-density-path", "")
+        if companion_density_path:
+            cube.metadata["esp_surface_density_path"] = companion_density_path
         render_cube_analysis(cube, show_page_note=False)

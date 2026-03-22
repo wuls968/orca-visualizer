@@ -34,7 +34,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def run_main(streamlit_args: list[str] | None = None) -> int:
-    script_path = Path(__file__).resolve().with_name("streamlit_app.py")
+    script_path = Path(__file__).resolve().parents[1] / "app.py"
     cmd = [sys.executable, "-m", "streamlit", "run", str(script_path)]
     if streamlit_args:
         if streamlit_args and streamlit_args[0] == "--":

@@ -5,6 +5,7 @@ import unittest
 from unittest import mock
 
 from orca_viz.orca_runtime import (
+    detect_orca_version,
     detect_orca_environment,
     orca_environment_dataframe,
     orca_environment_recommendations,
@@ -81,6 +82,20 @@ class OrcaRuntimeTests(unittest.TestCase):
                 resolved = resolve_orca_executable("orca_plot", path_hint=str(executable))
 
             self.assertEqual(resolved, executable.resolve())
+
+    def test_detect_orca_version_prefers_executable_output_then_falls_back_to_path(self) -> None:
+        with mock.patch("orca_viz.orca_runtime.subprocess.run") as mocked_run:
+            mocked_run.return_value = mock.Mock(
+                returncode=0,
+                stdout="Program Version 6.1.2\n",
+                stderr="",
+            )
+            detected = detect_orca_version("/tmp/orca")
+        self.assertEqual(detected, "6.1.2")
+
+        with mock.patch("orca_viz.orca_runtime.subprocess.run", side_effect=RuntimeError("boom")):
+            fallback = detect_orca_version(None, fallback_source="/opt/orca_6_1_0")
+        self.assertEqual(fallback, "6.1.0")
 
 
 if __name__ == "__main__":

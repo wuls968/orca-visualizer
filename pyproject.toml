@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "orca-visualizer"
-version = "0.1.1"
+version = "0.2.0"
 description = "Cross-platform ORCA post-processing and visualization app built with Streamlit, ASE, and Plotly."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -28,6 +28,7 @@ dependencies = [
   "pandas",
   "plotly",
   "psutil",
+  "scikit-image",
   "streamlit",
 ]
 
@@ -38,7 +39,7 @@ dev = [
 ]
 
 [project.scripts]
-orca-visualizer = "orca_viz.cli:run_main"
+orca-visualizer = "orca_viz.cli:main"
 orca-viz-doctor = "orca_viz.cli:doctor_main"
 
 [tool.setuptools]

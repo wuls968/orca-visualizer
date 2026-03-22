@@ -81,6 +81,7 @@ PYTHON_PACKAGE_NAMES = [
     "numpy",
     "psutil",
     "kaleido",
+    "scikit-image",
 ]
 
 
@@ -116,13 +117,16 @@ def detect_orca_environment(
             )
         )
 
-    version_source = next((tool.path for tool in statuses if tool.key == "orca" and tool.path), detected_home)
+    orca_executable_path = next((tool.path for tool in statuses if tool.key == "orca" and tool.path), None)
     return OrcaEnvironmentReport(
         platform=platform.platform(),
         python_executable=os.path.realpath(os.sys.executable),
         python_version=platform.python_version(),
         orca_home=detected_home,
-        detected_orca_version=_infer_orca_version(version_source),
+        detected_orca_version=detect_orca_version(
+            executable_path=orca_executable_path,
+            fallback_source=detected_home,
+        ),
         env_orca_home=os.environ.get("ORCA_HOME", "").strip() or None,
         path_hint=path_hint.strip() or None,
         tools=statuses,
@@ -150,6 +154,28 @@ def resolve_orca_executable(
         if candidate.exists() and candidate.is_file() and os.access(candidate, os.X_OK):
             return candidate.resolve()
     return None
+
+
+def resolve_orca_tool(
+    tool_key_or_executable: str,
+    *,
+    path_hint: str = "",
+    orca_home_hint: str = "",
+    login_env: dict[str, str] | None = None,
+) -> Path | None:
+    normalized_key = tool_key_or_executable.strip()
+    if not normalized_key:
+        return None
+    executable = next(
+        (spec.executable for spec in ORCA_TOOL_SPECS if spec.key == normalized_key),
+        normalized_key,
+    )
+    return resolve_orca_executable(
+        executable,
+        path_hint=path_hint,
+        orca_home_hint=orca_home_hint,
+        login_env=login_env,
+    )
 
 
 def orca_environment_dataframe(report: OrcaEnvironmentReport) -> pd.DataFrame:
@@ -214,6 +240,21 @@ def _python_package_versions() -> dict[str, str]:
     return versions
 
 
+def detect_orca_version(
+    executable_path: str | None,
+    *,
+    fallback_source: str | None = None,
+) -> str | None:
+    if executable_path:
+        queried = _query_orca_version(executable_path)
+        if queried:
+            return queried
+        inferred = _infer_orca_version(executable_path)
+        if inferred:
+            return inferred
+    return _infer_orca_version(fallback_source)
+
+
 def _infer_orca_version(source: str | None) -> str | None:
     if not source:
         return None
@@ -221,6 +262,43 @@ def _infer_orca_version(source: str | None) -> str | None:
     if not match:
         return None
     return match.group(1).replace("_", ".")
+
+
+def _query_orca_version(executable_path: str) -> str | None:
+    executable = Path(executable_path)
+    commands = [
+        [str(executable), "--version"],
+        [str(executable), "-v"],
+        [str(executable), "-h"],
+    ]
+    for command in commands:
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=6,
+                check=False,
+            )
+        except Exception:
+            continue
+        version = _version_from_text("\n".join([completed.stdout, completed.stderr]))
+        if version:
+            return version
+    return None
+
+
+def _version_from_text(raw_text: str) -> str | None:
+    patterns = [
+        r"Program Version\s+([0-9]+(?:\.[0-9]+)+)",
+        r"\bORCA\s+version\s+([0-9]+(?:\.[0-9]+)+)",
+        r"\bVersion\s*[:=]?\s*([0-9]+(?:\.[0-9]+)+)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, raw_text, flags=re.IGNORECASE)
+        if match:
+            return match.group(1)
+    return None
 
 
 def _normalize_orca_home_hint(raw_hint: str) -> str | None:

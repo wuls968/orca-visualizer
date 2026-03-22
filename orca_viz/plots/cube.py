@@ -4,16 +4,33 @@ import numpy as np
 import plotly.graph_objects as go
 from ase import Atoms
 from ase.data import covalent_radii
+from scipy.interpolate import RegularGridInterpolator
 
-from ..cube import CubeData, cube_kind_label, esp_signed_surface_levels, sample_cube_grid
+try:
+    from skimage.measure import marching_cubes
+except ImportError:  # pragma: no cover - dependency is declared, but keep a safe fallback
+    marching_cubes = None
+
+from ..cube import CubeData, cube_grid_is_compatible, cube_kind_label, esp_signed_surface_levels
 from ..i18n import tr
-from ..plot_theme import ACCENT_BLUE, ACCENT_GOLD, ACCENT_RED, CUBE_CAMERA, apply_standard_2d_style, apply_standard_3d_style
+from ..plot_theme import (
+    ACCENT_BLUE,
+    ACCENT_GOLD,
+    ACCENT_RED,
+    ACCENT_TEAL,
+    apply_standard_2d_style,
+    apply_standard_3d_style,
+)
 from .structure import _build_bond_pairs, _combined_bond_trace
+
 
 ESP_COLOR_NEGATIVE = ACCENT_RED
 ESP_COLOR_POSITIVE = ACCENT_BLUE
 ORBITAL_COLOR_NEGATIVE = ACCENT_BLUE
 ORBITAL_COLOR_POSITIVE = ACCENT_GOLD
+SPIN_COLOR_NEGATIVE = ACCENT_BLUE
+SPIN_COLOR_POSITIVE = ACCENT_RED
+DENSITY_SURFACE_COLOR = ACCENT_TEAL
 ESP_SLICE_COLORSCALE = [
     [0.00, "#9f1239"],
     [0.18, "#ef4444"],
@@ -28,6 +45,7 @@ ORBITAL_SLICE_COLORSCALE = [
     [0.80, "#fbbf24"],
     [1.00, "#b45309"],
 ]
+
 
 def create_cube_slice_figure(cube: CubeData, axis: str = "z", index: int | None = None) -> go.Figure:
     axis_map = {"x": 0, "y": 1, "z": 2}
@@ -82,135 +100,237 @@ def create_cube_isosurface_figure(
     quality: str = "精细",
     show_structure: bool = True,
     opacity: float | None = None,
+    surface_mode: str = "default",
+    surface_cube: CubeData | None = None,
 ) -> go.Figure:
     cube_kind = cube.metadata.get("cube_kind", "generic")
     stride = _cube_stride(cube, max_points=_cube_render_budget(cube_kind, quality))
-    xs, ys, zs, values = sample_cube_grid(cube, stride=stride)
-    positive_extent = float(np.max(values)) if values.size else 0.0
-    negative_extent = float(np.max(-values)) if values.size else 0.0
+    sampled_values, sampled_origin, sampled_axes = _sampled_cube_volume(cube, stride=stride)
+    xs, ys, zs = _sampled_cube_coordinates(sampled_values.shape, sampled_origin, sampled_axes)
+    value_flat = sampled_values.ravel()
+    positive_extent = float(np.max(value_flat)) if value_flat.size else 0.0
+    negative_extent = float(np.max(-value_flat)) if value_flat.size else 0.0
+    use_mesh = _use_mesh_render(quality)
 
     figure = go.Figure()
-    if cube_kind == "esp":
-        esp_opacity = opacity if opacity is not None else 0.20
-        esp_levels = esp_signed_surface_levels(cube, abs(level))
-        positive_level = esp_levels["positive_level"]
-        negative_level = esp_levels["negative_level"]
-        positive_cap = esp_levels["positive_cap"]
-        negative_cap = esp_levels["negative_cap"]
-        if positive_extent > positive_level:
-            figure.add_trace(
-                _single_signed_isosurface(
-                    xs,
-                    ys,
-                    zs,
-                    values,
-                    level=positive_level,
-                    max_extent=min(positive_extent, positive_cap),
-                    color=ESP_COLOR_POSITIVE,
-                    name=tr("ESP > 0"),
-                    opacity=esp_opacity,
-                )
+    focus_sets: list[np.ndarray] = []
+
+    if cube_kind == "esp" and surface_mode == "density_surface" and surface_cube is not None:
+        density_stride = _cube_stride(surface_cube, max_points=_cube_render_budget("electron_density", quality))
+        density_values, density_origin, density_axes = _sampled_cube_volume(surface_cube, stride=density_stride)
+        if cube_grid_is_compatible(cube, surface_cube):
+            density_mesh = _extract_isosurface_mesh(
+                density_values,
+                level=abs(level),
+                origin=density_origin,
+                axes=density_axes,
             )
-        if negative_extent > negative_level:
-            figure.add_trace(
-                _single_signed_isosurface(
-                    xs,
-                    ys,
-                    zs,
-                    -values,
-                    level=negative_level,
-                    max_extent=min(negative_extent, negative_cap),
-                    color=ESP_COLOR_NEGATIVE,
-                    name=tr("ESP < 0"),
-                    opacity=esp_opacity,
+            if density_mesh is not None:
+                vertices, faces = density_mesh
+                vertex_index_space = _transform_coordinates_to_grid(
+                    vertices,
+                    density_origin,
+                    density_axes,
                 )
-            )
-    elif cube_kind == "orbital":
-        orbital_opacity = opacity if opacity is not None else 0.82
-        if positive_extent > abs(level):
-            figure.add_trace(
-                _single_signed_isosurface(
-                    xs,
-                    ys,
-                    zs,
-                    values,
+                esp_sampled, _, _ = _sampled_cube_volume(cube, stride=density_stride)
+                esp_vertex_values = _interpolate_grid_values(esp_sampled, vertex_index_space)
+                color_scale = _esp_surface_color_limits(esp_vertex_values)
+                figure.add_trace(
+                    _mesh_trace(
+                        vertices,
+                        faces,
+                        name=tr("ESP on electron density surface"),
+                        opacity=opacity if opacity is not None else 0.78,
+                        intensity=esp_vertex_values,
+                        colorscale=ESP_SLICE_COLORSCALE,
+                        cmin=-color_scale,
+                        cmax=color_scale,
+                        colorbar_title="ESP",
+                    )
+                )
+                focus_sets.append(vertices)
+            else:
+                surface_mode = "default"
+        else:
+            surface_mode = "default"
+
+    if surface_mode == "default":
+        if cube_kind == "esp":
+            esp_opacity = opacity if opacity is not None else 0.20
+            esp_levels = esp_signed_surface_levels(cube, abs(level))
+            positive_level = esp_levels["positive_level"]
+            negative_level = esp_levels["negative_level"]
+            positive_cap = esp_levels["positive_cap"]
+            negative_cap = esp_levels["negative_cap"]
+            positive_focus = sampled_values >= positive_level
+            negative_focus = sampled_values <= -negative_level
+            if positive_extent > positive_level:
+                if use_mesh:
+                    positive_mesh = _extract_isosurface_mesh(
+                        sampled_values,
+                        level=positive_level,
+                        origin=sampled_origin,
+                        axes=sampled_axes,
+                    )
+                    if positive_mesh is not None:
+                        figure.add_trace(
+                            _mesh_trace(
+                                positive_mesh[0],
+                                positive_mesh[1],
+                                name=tr("ESP > 0"),
+                                opacity=esp_opacity,
+                                color=ESP_COLOR_POSITIVE,
+                            )
+                        )
+                        focus_sets.append(positive_mesh[0])
+                else:
+                    figure.add_trace(
+                        _single_signed_isosurface(
+                            xs,
+                            ys,
+                            zs,
+                            value_flat,
+                            level=positive_level,
+                            max_extent=min(positive_extent, positive_cap),
+                            color=ESP_COLOR_POSITIVE,
+                            name=tr("ESP > 0"),
+                            opacity=esp_opacity,
+                        )
+                    )
+                    focus_sets.append(_masked_points(positive_focus, xs, ys, zs))
+            if negative_extent > negative_level:
+                if use_mesh:
+                    negative_mesh = _extract_isosurface_mesh(
+                        -sampled_values,
+                        level=negative_level,
+                        origin=sampled_origin,
+                        axes=sampled_axes,
+                    )
+                    if negative_mesh is not None:
+                        figure.add_trace(
+                            _mesh_trace(
+                                negative_mesh[0],
+                                negative_mesh[1],
+                                name=tr("ESP < 0"),
+                                opacity=esp_opacity,
+                                color=ESP_COLOR_NEGATIVE,
+                            )
+                        )
+                        focus_sets.append(negative_mesh[0])
+                else:
+                    figure.add_trace(
+                        _single_signed_isosurface(
+                            xs,
+                            ys,
+                            zs,
+                            -value_flat,
+                            level=negative_level,
+                            max_extent=min(negative_extent, negative_cap),
+                            color=ESP_COLOR_NEGATIVE,
+                            name=tr("ESP < 0"),
+                            opacity=esp_opacity,
+                        )
+                    )
+                    focus_sets.append(_masked_points(negative_focus, xs, ys, zs))
+        elif cube_kind == "orbital":
+            orbital_opacity = opacity if opacity is not None else 0.82
+            focus_sets.extend(
+                _render_signed_cube_surfaces(
+                    figure,
+                    sampled_values=sampled_values,
+                    sampled_origin=sampled_origin,
+                    sampled_axes=sampled_axes,
+                    xs=xs,
+                    ys=ys,
+                    zs=zs,
                     level=abs(level),
-                    max_extent=positive_extent,
-                    color=ORBITAL_COLOR_POSITIVE,
-                    name=tr("phase +"),
+                    positive_color=ORBITAL_COLOR_POSITIVE,
+                    negative_color=ORBITAL_COLOR_NEGATIVE,
+                    positive_name=tr("phase +"),
+                    negative_name=tr("phase -"),
                     opacity=orbital_opacity,
+                    use_mesh=use_mesh,
                 )
             )
-        if negative_extent > abs(level):
-            figure.add_trace(
-                _single_signed_isosurface(
-                    xs,
-                    ys,
-                    zs,
-                    -values,
+        elif cube_kind == "spin_density":
+            spin_opacity = opacity if opacity is not None else 0.70
+            focus_sets.extend(
+                _render_signed_cube_surfaces(
+                    figure,
+                    sampled_values=sampled_values,
+                    sampled_origin=sampled_origin,
+                    sampled_axes=sampled_axes,
+                    xs=xs,
+                    ys=ys,
+                    zs=zs,
                     level=abs(level),
-                    max_extent=negative_extent,
-                    color=ORBITAL_COLOR_NEGATIVE,
-                    name=tr("phase -"),
-                    opacity=orbital_opacity,
-                )
-            )
-    else:
-        default_opacity = opacity if opacity is not None else 0.55
-        if np.min(values) < 0 < np.max(values):
-            figure.add_trace(
-                go.Isosurface(
-                    x=xs,
-                    y=ys,
-                    z=zs,
-                    value=values,
-                    isomin=-abs(level),
-                    isomax=abs(level),
-                    surface_count=2,
-                    colorscale=_cube_slice_colorscale(cube_kind),
-                    caps={"x_show": False, "y_show": False, "z_show": False},
-                    opacity=default_opacity,
-                    colorbar={"title": _cube_colorbar_title(cube_kind)},
-                    showscale=True,
+                    positive_color=SPIN_COLOR_POSITIVE,
+                    negative_color=SPIN_COLOR_NEGATIVE,
+                    positive_name=tr("spin +"),
+                    negative_name=tr("spin -"),
+                    opacity=spin_opacity,
+                    use_mesh=use_mesh,
                 )
             )
         else:
-            extent = float(np.max(np.abs(values))) if values.size else abs(level)
-            figure.add_trace(
-                _single_signed_isosurface(
-                    xs,
-                    ys,
-                    zs,
-                    np.abs(values),
+            default_opacity = opacity if opacity is not None else 0.42 if cube_kind == "electron_density" else 0.55
+            if use_mesh:
+                source_values = sampled_values if np.max(sampled_values) > abs(level) else np.abs(sampled_values)
+                mesh = _extract_isosurface_mesh(
+                    source_values,
                     level=abs(level),
-                    max_extent=extent,
-                    color="rgb(20, 184, 166)",
-                    name=_cube_colorbar_title(cube_kind),
-                    opacity=default_opacity,
+                    origin=sampled_origin,
+                    axes=sampled_axes,
                 )
-            )
+                if mesh is not None:
+                    figure.add_trace(
+                        _mesh_trace(
+                            mesh[0],
+                            mesh[1],
+                            name=_cube_colorbar_title(cube_kind),
+                            opacity=default_opacity,
+                            color=DENSITY_SURFACE_COLOR,
+                        )
+                    )
+                    focus_sets.append(mesh[0])
+            else:
+                extent = float(np.max(np.abs(value_flat))) if value_flat.size else abs(level)
+                figure.add_trace(
+                    _single_signed_isosurface(
+                        xs,
+                        ys,
+                        zs,
+                        np.abs(value_flat),
+                        level=abs(level),
+                        max_extent=extent,
+                        color=DENSITY_SURFACE_COLOR,
+                        name=_cube_colorbar_title(cube_kind),
+                        opacity=default_opacity,
+                    )
+                )
+                focus_sets.append(_masked_points(np.abs(sampled_values) >= abs(level), xs, ys, zs))
 
     if show_structure and cube.atoms is not None and len(cube.atoms) > 0:
         for trace in _subtle_structure_traces(cube.atoms, cube_kind):
             figure.add_trace(trace)
 
-    title = _cube_isosurface_title(cube_kind, level)
+    title = _cube_isosurface_title(cube_kind, level, surface_mode=surface_mode)
     apply_standard_3d_style(
         figure,
         title=title,
-        camera=CUBE_CAMERA,
-        showlegend=cube_kind in {"esp", "orbital"},
+        camera=_cube_camera(focus_sets, cube.atoms),
+        showlegend=cube_kind in {"esp", "orbital", "spin_density"},
         margin={"l": 0, "r": 0, "t": 56, "b": 0},
     )
-    figure.update_layout(
-        scene={
-            **figure.layout.scene.to_plotly_json(),
-            "xaxis_title": "X (A)",
-            "yaxis_title": "Y (A)",
-            "zaxis_title": "Z (A)",
-        }
-    )
+    scene_layout = figure.layout.scene.to_plotly_json()
+    for axis_name, axis_payload in _cube_scene_ranges(focus_sets, cube.atoms).items():
+        merged_axis = scene_layout.get(axis_name, {})
+        merged_axis.update(axis_payload)
+        scene_layout[axis_name] = merged_axis
+    figure.update_layout(scene=scene_layout)
+    figure.update_scenes(xaxis_title="X (A)", yaxis_title="Y (A)", zaxis_title="Z (A)")
     return figure
+
 
 def _cube_stride(cube: CubeData, max_points: int = 30_000) -> int:
     stride = 1
@@ -230,21 +350,27 @@ def _cube_render_budget(cube_kind: str, quality: str) -> int:
         "Ultra": "ultra",
     }.get(quality, quality)
     base_budget = {
-        "standard": 45_000,
-        "fine": 120_000,
-        "ultra": 220_000,
-    }.get(normalized_quality, 120_000)
-    if cube_kind in {"orbital", "esp"}:
-        return int(base_budget * 1.25)
+        "standard": 90_000,
+        "fine": 260_000,
+        "ultra": 720_000,
+    }.get(normalized_quality, 260_000)
+    if cube_kind in {"orbital", "esp", "spin_density"}:
+        return int(base_budget * 1.35)
+    if cube_kind == "electron_density":
+        return int(base_budget * 1.10)
     return base_budget
 
 
-def _normalize_mode(mode_displacements: np.ndarray) -> np.ndarray:
-    norms = np.linalg.norm(mode_displacements, axis=1)
-    max_norm = float(np.max(norms)) if norms.size else 1.0
-    if max_norm == 0:
-        return mode_displacements.copy()
-    return mode_displacements / max_norm
+def _use_mesh_render(quality: str) -> bool:
+    normalized_quality = {
+        "标准": "standard",
+        "Standard": "standard",
+        "精细": "fine",
+        "Fine": "fine",
+        "极致": "ultra",
+        "Ultra": "ultra",
+    }.get(quality, quality)
+    return normalized_quality == "ultra" and marching_cubes is not None
 
 
 def _cube_slice_colorscale(cube_kind: str) -> list[list[float | str]] | str:
@@ -269,16 +395,18 @@ def _cube_colorbar_title(cube_kind: str) -> str:
     }.get(cube_kind, "Value")
 
 
-def _cube_isosurface_title(cube_kind: str, level: float) -> str:
+def _cube_isosurface_title(cube_kind: str, level: float, *, surface_mode: str = "default") -> str:
+    if cube_kind == "esp" and surface_mode == "density_surface":
+        return tr("电子密度表面的 ESP 着色 |rho| = {level}", level=f"{abs(level):.4f}")
     if cube_kind == "esp":
         return tr("ESP 等势面 |V| = {level}", level=f"{abs(level):.3f}")
     if cube_kind == "orbital":
         return tr("轨道相位等值面 |psi| = {level}", level=f"{abs(level):.3f}")
     if cube_kind == "electron_density":
-        return tr("电子密度等值面 rho = {level}", level=f"{abs(level):.3f}")
+        return tr("电子密度等值面 rho = {level}", level=f"{abs(level):.4f}")
     if cube_kind == "spin_density":
-        return tr("自旋密度等值面 |rho_s| = {level}", level=f"{abs(level):.3f}")
-    return tr("Cube 等值面 |value| = {level}", level=f"{abs(level):.3f}")
+        return tr("自旋密度等值面 |rho_s| = {level}", level=f"{abs(level):.4f}")
+    return tr("Cube 等值面 |value| = {level}", level=f"{abs(level):.4f}")
 
 
 def _single_signed_isosurface(
@@ -306,25 +434,257 @@ def _single_signed_isosurface(
         opacity=opacity,
         flatshading=False,
         lighting={
-            "ambient": 0.58,
-            "diffuse": 0.92,
-            "specular": 0.34,
-            "roughness": 0.28,
-            "fresnel": 0.18,
+            "ambient": 0.62,
+            "diffuse": 0.96,
+            "specular": 0.28,
+            "roughness": 0.18,
+            "fresnel": 0.10,
         },
-        lightposition={"x": 110, "y": 150, "z": 95},
+        lightposition={"x": 115, "y": 145, "z": 105},
         showscale=False,
         name=name,
         hovertemplate=f"{name}<br>{tr('阈值')}={level:.4f}<extra></extra>",
     )
 
+
+def _mesh_trace(
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    *,
+    name: str,
+    opacity: float,
+    color: str | None = None,
+    intensity: np.ndarray | None = None,
+    colorscale: list[list[float | str]] | str | None = None,
+    cmin: float | None = None,
+    cmax: float | None = None,
+    colorbar_title: str | None = None,
+) -> go.Mesh3d:
+    trace_kwargs: dict[str, object] = {
+        "x": vertices[:, 0],
+        "y": vertices[:, 1],
+        "z": vertices[:, 2],
+        "i": faces[:, 0],
+        "j": faces[:, 1],
+        "k": faces[:, 2],
+        "opacity": opacity,
+        "flatshading": False,
+        "lighting": {
+            "ambient": 0.65,
+            "diffuse": 0.96,
+            "specular": 0.20,
+            "roughness": 0.14,
+            "fresnel": 0.06,
+        },
+        "lightposition": {"x": 120, "y": 150, "z": 110},
+        "hovertemplate": f"{name}<extra></extra>",
+        "name": name,
+        "showscale": bool(intensity is not None),
+    }
+    if intensity is not None:
+        trace_kwargs.update(
+            {
+                "intensity": intensity,
+                "intensitymode": "vertex",
+                "colorscale": colorscale,
+                "cmin": cmin,
+                "cmax": cmax,
+                "colorbar": {"title": colorbar_title} if colorbar_title else None,
+            }
+        )
+    else:
+        trace_kwargs["color"] = color
+    return go.Mesh3d(**trace_kwargs)
+
+
+def _render_signed_cube_surfaces(
+    figure: go.Figure,
+    *,
+    sampled_values: np.ndarray,
+    sampled_origin: np.ndarray,
+    sampled_axes: np.ndarray,
+    xs: np.ndarray,
+    ys: np.ndarray,
+    zs: np.ndarray,
+    level: float,
+    positive_color: str,
+    negative_color: str,
+    positive_name: str,
+    negative_name: str,
+    opacity: float,
+    use_mesh: bool,
+) -> list[np.ndarray]:
+    focus_sets: list[np.ndarray] = []
+    value_flat = sampled_values.ravel()
+    positive_extent = float(np.max(value_flat)) if value_flat.size else 0.0
+    negative_extent = float(np.max(-value_flat)) if value_flat.size else 0.0
+    positive_mask = sampled_values >= level
+    negative_mask = sampled_values <= -level
+    if positive_extent > level:
+        if use_mesh:
+            positive_mesh = _extract_isosurface_mesh(
+                sampled_values,
+                level=level,
+                origin=sampled_origin,
+                axes=sampled_axes,
+            )
+            if positive_mesh is not None:
+                figure.add_trace(
+                    _mesh_trace(
+                        positive_mesh[0],
+                        positive_mesh[1],
+                        name=positive_name,
+                        opacity=opacity,
+                        color=positive_color,
+                    )
+                )
+                focus_sets.append(positive_mesh[0])
+        else:
+            figure.add_trace(
+                _single_signed_isosurface(
+                    xs,
+                    ys,
+                    zs,
+                    value_flat,
+                    level=level,
+                    max_extent=positive_extent,
+                    color=positive_color,
+                    name=positive_name,
+                    opacity=opacity,
+                )
+            )
+            focus_sets.append(_masked_points(positive_mask, xs, ys, zs))
+    if negative_extent > level:
+        if use_mesh:
+            negative_mesh = _extract_isosurface_mesh(
+                -sampled_values,
+                level=level,
+                origin=sampled_origin,
+                axes=sampled_axes,
+            )
+            if negative_mesh is not None:
+                figure.add_trace(
+                    _mesh_trace(
+                        negative_mesh[0],
+                        negative_mesh[1],
+                        name=negative_name,
+                        opacity=opacity,
+                        color=negative_color,
+                    )
+                )
+                focus_sets.append(negative_mesh[0])
+        else:
+            figure.add_trace(
+                _single_signed_isosurface(
+                    xs,
+                    ys,
+                    zs,
+                    -value_flat,
+                    level=level,
+                    max_extent=negative_extent,
+                    color=negative_color,
+                    name=negative_name,
+                    opacity=opacity,
+                )
+            )
+            focus_sets.append(_masked_points(negative_mask, xs, ys, zs))
+    return focus_sets
+
+
+def _sampled_cube_volume(
+    cube: CubeData,
+    *,
+    stride: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    slices = tuple(slice(None, None, stride) for _ in range(3))
+    sampled_values = cube.values[slices]
+    sampled_axes = cube.axis_vectors_angstrom * stride
+    return sampled_values, cube.origin_angstrom, sampled_axes
+
+
+def _sampled_cube_coordinates(
+    shape: tuple[int, int, int],
+    origin: np.ndarray,
+    axes: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    i, j, k = np.indices(shape)
+    coords = origin + i[..., None] * axes[0] + j[..., None] * axes[1] + k[..., None] * axes[2]
+    return coords[..., 0].ravel(), coords[..., 1].ravel(), coords[..., 2].ravel()
+
+
+def _extract_isosurface_mesh(
+    values: np.ndarray,
+    *,
+    level: float,
+    origin: np.ndarray,
+    axes: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    if marching_cubes is None:
+        return None
+    finite_values = values[np.isfinite(values)]
+    if finite_values.size == 0:
+        return None
+    if float(np.max(finite_values)) <= level or float(np.min(finite_values)) >= level:
+        return None
+    try:
+        vertices, faces, _, _ = marching_cubes(values.astype(float), level=level, allow_degenerate=False)
+    except (RuntimeError, ValueError):
+        return None
+    cartesian_vertices = origin + vertices[:, 0:1] * axes[0] + vertices[:, 1:2] * axes[1] + vertices[:, 2:3] * axes[2]
+    return cartesian_vertices, faces.astype(int)
+
+
+def _transform_coordinates_to_grid(
+    coordinates: np.ndarray,
+    origin: np.ndarray,
+    axes: np.ndarray,
+) -> np.ndarray:
+    relative = coordinates - origin
+    transform = np.column_stack([axes[0], axes[1], axes[2]])
+    return np.linalg.solve(transform, relative.T).T
+
+
+def _interpolate_grid_values(values: np.ndarray, coordinates: np.ndarray) -> np.ndarray:
+    interpolator = RegularGridInterpolator(
+        (np.arange(values.shape[0]), np.arange(values.shape[1]), np.arange(values.shape[2])),
+        values,
+        bounds_error=False,
+        fill_value=np.nan,
+    )
+    sampled = interpolator(coordinates)
+    sampled = np.where(np.isfinite(sampled), sampled, 0.0)
+    return sampled.astype(float)
+
+
+def _esp_surface_color_limits(values: np.ndarray) -> float:
+    finite_values = values[np.isfinite(values)]
+    if finite_values.size == 0:
+        return 0.05
+    positive = finite_values[finite_values > 1e-9]
+    negative = np.abs(finite_values[finite_values < -1e-9])
+    candidates: list[float] = []
+    if positive.size:
+        candidates.append(float(np.quantile(positive, 0.96)))
+    if negative.size:
+        candidates.append(float(np.quantile(negative, 0.96)))
+    if candidates:
+        return max(max(candidates), 0.01)
+    return max(float(np.quantile(np.abs(finite_values), 0.96)), 0.01)
+
+
+def _masked_points(mask: np.ndarray, xs: np.ndarray, ys: np.ndarray, zs: np.ndarray) -> np.ndarray:
+    if not np.any(mask):
+        return np.empty((0, 3))
+    return np.column_stack([xs[mask.ravel()], ys[mask.ravel()], zs[mask.ravel()]])
+
+
 def _subtle_structure_traces(atoms: Atoms, cube_kind: str) -> list[go.Scatter3d]:
     positions = atoms.get_positions()
-    atom_sizes = [max(covalent_radii[number] * 10, 6) for number in atoms.get_atomic_numbers()]
-    atom_color = "rgba(71, 85, 105, 0.45)" if cube_kind == "esp" else "rgba(51, 65, 85, 0.60)"
-    bond_color = "rgba(100, 116, 139, 0.45)" if cube_kind == "esp" else "rgba(71, 85, 105, 0.60)"
+    atom_sizes = [max(covalent_radii[number] * 9, 5.5) for number in atoms.get_atomic_numbers()]
+    atom_color = "rgba(71, 85, 105, 0.38)" if cube_kind in {"esp", "electron_density"} else "rgba(51, 65, 85, 0.54)"
+    bond_color = "rgba(100, 116, 139, 0.34)" if cube_kind in {"esp", "electron_density"} else "rgba(71, 85, 105, 0.52)"
     bond_trace = _combined_bond_trace(atoms, _build_bond_pairs(atoms))
-    traces = [
+    return [
         go.Scatter3d(
             x=positions[:, 0],
             y=positions[:, 1],
@@ -333,7 +693,7 @@ def _subtle_structure_traces(atoms: Atoms, cube_kind: str) -> list[go.Scatter3d]
             marker={
                 "size": atom_sizes,
                 "color": atom_color,
-                "line": {"color": "rgba(15, 23, 42, 0.35)", "width": 0.8},
+                "line": {"color": "rgba(15, 23, 42, 0.28)", "width": 0.8},
             },
             hoverinfo="skip",
             showlegend=False,
@@ -343,9 +703,55 @@ def _subtle_structure_traces(atoms: Atoms, cube_kind: str) -> list[go.Scatter3d]
             y=bond_trace.y,
             z=bond_trace.z,
             mode="lines",
-            line={"color": bond_color, "width": 4},
+            line={"color": bond_color, "width": 3.2},
             hoverinfo="skip",
             showlegend=False,
         ),
     ]
-    return traces
+
+
+def _cube_scene_ranges(surface_sets: list[np.ndarray], atoms: Atoms | None) -> dict[str, dict[str, list[float]]]:
+    points = _cube_focus_points(surface_sets, atoms)
+    mins = np.min(points, axis=0)
+    maxs = np.max(points, axis=0)
+    spans = np.maximum(maxs - mins, 0.2)
+    max_span = float(np.max(spans))
+    padding = max(max_span * 0.14, 0.45)
+    ranges = []
+    for axis_min, axis_max in zip(mins, maxs):
+        center = float((axis_min + axis_max) / 2.0)
+        half_span = float(max(axis_max - axis_min, 0.2) / 2.0 + padding)
+        ranges.append([center - half_span, center + half_span])
+    return {
+        "xaxis": {"range": ranges[0]},
+        "yaxis": {"range": ranges[1]},
+        "zaxis": {"range": ranges[2]},
+    }
+
+
+def _cube_camera(surface_sets: list[np.ndarray], atoms: Atoms | None) -> dict[str, dict[str, float]]:
+    points = _cube_focus_points(surface_sets, atoms)
+    mins = np.min(points, axis=0)
+    maxs = np.max(points, axis=0)
+    spans = np.maximum(maxs - mins, 0.2)
+    max_span = float(np.max(spans))
+    normalized = spans / max_span if max_span > 0 else np.ones(3)
+    scale = 1.06 if max_span < 6.0 else 1.12
+    return {
+        "eye": {
+            "x": scale * (1.00 + 0.24 * float(normalized[0])),
+            "y": scale * (0.92 + 0.24 * float(normalized[1])),
+            "z": scale * (0.82 + 0.22 * float(normalized[2])),
+        }
+    }
+
+
+def _cube_focus_points(surface_sets: list[np.ndarray], atoms: Atoms | None) -> np.ndarray:
+    selected_points: list[np.ndarray] = [points for points in surface_sets if points.size]
+    if atoms is not None and len(atoms) > 0:
+        selected_points.append(atoms.get_positions())
+    if selected_points:
+        return np.vstack(selected_points)
+    if atoms is not None and len(atoms) > 0:
+        return atoms.get_positions()
+    return np.zeros((1, 3))

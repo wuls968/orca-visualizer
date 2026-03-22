@@ -172,3 +172,63 @@ def apply_standard_3d_style(
     }
     figure.update_layout(**layout)
     return figure
+
+
+def standard_3d_axis_layout(
+    *,
+    show_axes: bool = True,
+    background_color: str = CHART_PAPER_BG,
+) -> dict[str, Any]:
+    axis_visibility = bool(show_axes)
+    return {
+        "xaxis": {
+            "visible": axis_visibility,
+            "title": {"text": None, "font": {"size": 14, "color": TEXT_PRIMARY}},
+            "backgroundcolor": background_color,
+            "showbackground": False,
+            "showgrid": axis_visibility,
+            "gridcolor": GRID_COLOR,
+            "linecolor": AXIS_COLOR,
+            "zeroline": False,
+            "zerolinecolor": GRID_COLOR,
+            "showticklabels": axis_visibility,
+            "tickfont": {"size": 12, "color": TEXT_MUTED},
+        },
+        "yaxis": {
+            "visible": axis_visibility,
+            "title": {"text": None, "font": {"size": 14, "color": TEXT_PRIMARY}},
+            "backgroundcolor": background_color,
+            "showbackground": False,
+            "showgrid": axis_visibility,
+            "gridcolor": GRID_COLOR,
+            "linecolor": AXIS_COLOR,
+            "zeroline": False,
+            "zerolinecolor": GRID_COLOR,
+            "showticklabels": axis_visibility,
+            "tickfont": {"size": 12, "color": TEXT_MUTED},
+        },
+        "zaxis": {
+            "visible": axis_visibility,
+            "title": {"text": None, "font": {"size": 14, "color": TEXT_PRIMARY}},
+            "backgroundcolor": background_color,
+            "showbackground": False,
+            "showgrid": axis_visibility,
+            "gridcolor": GRID_COLOR,
+            "linecolor": AXIS_COLOR,
+            "zeroline": False,
+            "zerolinecolor": GRID_COLOR,
+            "showticklabels": axis_visibility,
+            "tickfont": {"size": 12, "color": TEXT_MUTED},
+        },
+    }
+
+
+def standard_export_margin(*, is_3d: bool, crop_mode: str = "balanced") -> dict[str, int]:
+    normalized = crop_mode.strip().lower()
+    if is_3d:
+        if normalized == "tight":
+            return {"l": 0, "r": 0, "t": 38, "b": 0}
+        return {"l": 0, "r": 0, "t": 54, "b": 0}
+    if normalized == "tight":
+        return {"l": 42, "r": 18, "t": 54, "b": 42}
+    return {"l": 72, "r": 28, "t": 62, "b": 60}

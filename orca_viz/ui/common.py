@@ -371,6 +371,8 @@ def format_float(value: float | None) -> str:
 
 def image_mime_type(file_name: str) -> str:
     suffix = Path(file_name).suffix.lower()
+    if suffix == ".html":
+        return "text/html"
     if suffix == ".svg":
         return "image/svg+xml"
     if suffix == ".pdf":
