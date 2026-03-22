@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented here.
 
+## [0.3.1] - 2026-03-22
+
+### Changed
+
+- Published the first public npm package for `orca-visualizer`
+- Switched the GitHub Actions npm workflow fully to Trusted Publishing mode
+- Prepared the repository for token-free npm publication after package-level trusted publisher binding
+
+### Validation
+
+- Verified the first public `npm publish` locally for `orca-visualizer@0.3.0`
+- Re-ran `npm pack --dry-run`
+- Re-ran `python -m unittest discover -s tests`
+
 ## [0.3.0] - 2026-03-22
 
 ### Major Update
