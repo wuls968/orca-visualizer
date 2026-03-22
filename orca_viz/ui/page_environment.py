@@ -114,7 +114,7 @@ def render_environment_doctor() -> None:
         st.code(
             "\n".join(
                 [
-                    "npm install -g @wuls968/orca-visualizer",
+                    "npm install -g orca-visualizer",
                     "orca-visualizer",
                     "orca-visualizer doctor",
                 ]

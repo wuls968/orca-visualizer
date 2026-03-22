@@ -1,5 +1,5 @@
 {
-  "name": "@wuls968/orca-visualizer",
+  "name": "orca-visualizer",
   "version": "0.3.0",
   "description": "Cross-platform ORCA post-processing and visualization app with a bundled npm launcher.",
   "license": "MIT",
@@ -41,7 +41,6 @@
     "win32"
   ],
   "publishConfig": {
-    "access": "public",
     "registry": "https://registry.npmjs.org/"
   }
 }

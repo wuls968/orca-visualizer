@@ -124,7 +124,7 @@ Use batch mode to compare multiple ORCA or cube files from:
 ### 1. Install from npm
 
 ```bash
-npm install -g @wuls968/orca-visualizer
+npm install -g orca-visualizer
 orca-visualizer
 orca-visualizer doctor
 ```
@@ -132,7 +132,7 @@ orca-visualizer doctor
 Or run without a global install:
 
 ```bash
-npx @wuls968/orca-visualizer
+npx orca-visualizer
 ```
 
 Notes:

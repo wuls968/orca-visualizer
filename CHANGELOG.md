@@ -6,7 +6,7 @@ All notable changes to this project are documented here.
 
 ### Major Update
 
-- Added an npm distribution wrapper so end users can install and launch ORCA Visualizer with `npm install -g @wuls968/orca-visualizer`
+- Added an npm distribution wrapper so end users can install and launch ORCA Visualizer with `npm install -g orca-visualizer`
 - Added a GitHub Actions workflow for automated npm publication on GitHub release publication
 - Updated the launcher path so packaged installs run the bundled `orca_viz/streamlit_app.py` entrypoint instead of relying on the repository-root `app.py`
 - Added npm-oriented install guidance to the environment doctor and documentation while keeping the Python install path for developers
