@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "orca-visualizer"
-version = "1.0.2"
+version = "1.0.3"
 description = "Cross-platform ORCA post-processing and visualization app built with Streamlit, ASE, and Plotly."
 readme = "README.md"
 requires-python = ">=3.10,<3.13"

@@ -172,6 +172,35 @@ class OrcaRuntimeTests(unittest.TestCase):
 
             self.assertEqual(resolved, orca_plot.resolve())
 
+    def test_orca_anchor_sibling_lookup_prefers_tool_next_to_detected_orca(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            install_dir = Path(temp_dir) / "orca_6_1_0"
+            install_dir.mkdir()
+            orca = install_dir / _tool_file_name("orca")
+            orca_plot = install_dir / _tool_file_name("orca_plot")
+            _write_executable(orca)
+            _write_executable(orca_plot)
+
+            def fake_which(name: str) -> str | None:
+                if name in {"orca", "orca.exe", "orca.bat", "orca.cmd"}:
+                    return str(orca)
+                return None
+
+            with mock.patch.dict("os.environ", {"ORCA_HOME": "", "PATH": ""}, clear=False), mock.patch(
+                "orca_viz.orca_runtime.shutil.which",
+                side_effect=fake_which,
+            ), mock.patch(
+                "orca_viz.orca_runtime._load_login_shell_orca_env",
+                return_value={},
+            ), mock.patch(
+                "orca_viz.orca_runtime._shell_lookup_candidates",
+                return_value=[],
+            ), mock.patch("orca_viz.orca_runtime._common_orca_directories", return_value=[]):
+                resolution = resolve_orca_tool_details("orca_plot")
+
+            self.assertEqual(resolution.path, str(orca_plot.resolve()))
+            self.assertEqual(resolution.resolved_via, "orca_anchor_sibling")
+
     @unittest.skipIf(platform.system() == "Windows", "Windows CI symlink creation is not reliable here")
     def test_resolve_orca_executable_realpath_normalizes_symlink(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -285,7 +314,7 @@ class OrcaRuntimeTests(unittest.TestCase):
                 resolution = resolve_orca_tool_details("orca_plot")
 
             self.assertEqual(resolution.path, str(orca_plot.resolve()))
-            self.assertEqual(resolution.resolved_via, "common_dir_scan")
+            self.assertIn(resolution.resolved_via, {"common_dir_scan", "orca_anchor_sibling"})
 
     def test_path_hint_takes_priority_and_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented here.
 
+## [1.0.3] - 2026-03-23
+
+### Fixed
+
+- Promoted `orca`-anchored sibling discovery to a first-class local detection path: once the app can locate `orca`, it now checks that executable's parent directory first for sibling tools such as `orca_plot`, `orca_2json`, and `orca_2mkl`
+- Kept explicit tool hints and direct tool matches higher priority than the sibling fallback, so user-provided paths and direct `which orca_plot` results are still honored exactly
+- Made the local runtime logic match the common real-world install pattern on macOS, Linux, and Windows where ORCA helper executables live beside the main `orca` binary
+
+### Validation
+
+- Re-ran `python -m unittest tests.test_orca_runtime`
+- Re-ran `python -m unittest discover -s tests`
+- Re-ran `python -m compileall -q app.py orca_viz tests`
+
 ## [1.0.2] - 2026-03-23
 
 ### Fixed

@@ -137,6 +137,7 @@ DISCOVERY_METHOD_LABELS = {
     "process_seed": "current process PATH via sibling ORCA tool",
     "shell_login_seed": "login shell via sibling ORCA tool",
     "shell_interactive_seed": "interactive shell via sibling ORCA tool",
+    "orca_anchor_sibling": "sibling of detected orca executable",
     "env_hint_file": "ORCA_HOME-like env var (file)",
     "env_hint_dir": "ORCA_HOME-like env var (directory)",
     "process_path_scan": "current process PATH directory scan",
@@ -222,13 +223,42 @@ def resolve_orca_executable_details(
 ) -> OrcaToolResolution:
     executable_names = _executable_names(executable)
     login_env = login_env if login_env is not None else _load_login_shell_orca_env()
-    candidates = _candidate_paths(
+    direct_candidates = _direct_candidate_paths(
+        executable_names,
+        path_hint=path_hint,
+        orca_home_hint=orca_home_hint,
+        login_env=login_env,
+    )
+    resolved = _resolve_executable_candidate(direct_candidates)
+    if resolved is not None:
+        searched_locations = [f"{_method_label(candidate.method)} -> {candidate.path}" for candidate in direct_candidates[:20]]
+        return OrcaToolResolution(
+            executable=executable,
+            path=str(resolved.path),
+            real_path=str(resolved.path),
+            resolved_via=resolved.method,
+            failure_reason=None,
+            searched_locations=searched_locations,
+        )
+
+    candidates: list[_DiscoveryCandidate] = list(direct_candidates)
+    if not _is_orca_executable(executable_names):
+        candidates.extend(
+            _candidates_from_detected_orca_anchor(
+                executable_names,
+                path_hint=path_hint,
+                orca_home_hint=orca_home_hint,
+                login_env=login_env,
+            )
+        )
+    candidates.extend(_candidate_paths(
         executable_names,
         path_hint=path_hint,
         orca_home_hint=orca_home_hint,
         login_env=login_env,
         include_shell_commands=False,
-    )
+    ))
+    candidates = _dedupe_discovery_candidates(candidates)
     resolved = _resolve_executable_candidate(candidates)
     if resolved is None:
         shell_fallback_candidates = _shell_fallback_candidates(executable_names, login_env)
@@ -574,6 +604,67 @@ def _candidate_paths(
     return deduped
 
 
+def _direct_candidate_paths(
+    executable_names: list[str],
+    *,
+    path_hint: str,
+    orca_home_hint: str,
+    login_env: dict[str, str],
+) -> list[_DiscoveryCandidate]:
+    candidates: list[_DiscoveryCandidate] = []
+    for raw_hint, source_method_file, source_method_dir in [
+        (path_hint.strip(), "path_hint_file", "path_hint_dir"),
+        (orca_home_hint.strip(), "orca_home_hint_file", "orca_home_hint_dir"),
+    ]:
+        if not raw_hint:
+            continue
+        hinted = Path(raw_hint).expanduser()
+        if hinted.is_file():
+            if hinted.name in executable_names:
+                candidates.append(_DiscoveryCandidate(hinted, source_method_file))
+            for root in _candidate_roots_from_executable(hinted):
+                candidates.extend(_executable_candidates_from_root(root, executable_names, source_method_file))
+        elif hinted.is_dir():
+            candidates.extend(_executable_candidates_from_root(hinted, executable_names, source_method_dir))
+
+    for executable_name in executable_names:
+        which_result = shutil.which(executable_name)
+        if which_result:
+            candidates.append(_DiscoveryCandidate(Path(which_result), "process_which"))
+
+    for env_home in _orca_env_hints(login_env):
+        env_path = Path(env_home).expanduser()
+        if env_path.is_file():
+            for root in _candidate_roots_from_executable(env_path):
+                candidates.extend(_executable_candidates_from_root(root, executable_names, "env_hint_file"))
+        elif env_path.is_dir():
+            candidates.extend(_executable_candidates_from_root(env_path, executable_names, "env_hint_dir"))
+    return _dedupe_discovery_candidates(candidates)
+
+
+def _candidates_from_detected_orca_anchor(
+    executable_names: list[str],
+    *,
+    path_hint: str,
+    orca_home_hint: str,
+    login_env: dict[str, str],
+) -> list[_DiscoveryCandidate]:
+    anchor_candidates = _candidate_paths(
+        _executable_names("orca"),
+        path_hint=path_hint,
+        orca_home_hint=orca_home_hint,
+        login_env=login_env,
+        include_shell_commands=True,
+    )
+    anchor = _resolve_executable_candidate(anchor_candidates)
+    if anchor is None:
+        return []
+    sibling_candidates: list[_DiscoveryCandidate] = []
+    for root in _candidate_roots_from_executable(anchor.path):
+        sibling_candidates.extend(_executable_candidates_from_root(root, executable_names, "orca_anchor_sibling"))
+    return _dedupe_discovery_candidates(sibling_candidates)
+
+
 def _load_login_shell_orca_env() -> dict[str, str]:
     if os.name == "nt":
         return {}
@@ -800,6 +891,11 @@ def _resolve_executable_candidate(candidates: list[_DiscoveryCandidate]) -> _Dis
         if candidate.path.exists() and candidate.path.is_file() and os.access(candidate.path, os.X_OK):
             return _DiscoveryCandidate(candidate.path.resolve(), candidate.method)
     return None
+
+
+def _is_orca_executable(executable_names: list[str]) -> bool:
+    normalized = {name.lower() for name in executable_names}
+    return any(name in {"orca", "orca.exe", "orca.bat", "orca.cmd"} for name in normalized)
 
 
 def _shell_fallback_candidates(
