@@ -1,14 +1,17 @@
 import unittest
+from unittest import mock
 
 import plotly.graph_objects as go
 import pandas as pd
 from ase import Atoms
 
+import orca_viz.exporting as exporting_module
 from orca_viz.exporting import (
     EXPORT_PRESETS_2D,
     EXPORT_PRESETS_3D,
     apply_export_preset,
     export_pathway_animation,
+    export_plotly_figure,
     export_presets_for_figure,
     available_video_formats,
     normalized_animation_file_name,
@@ -187,6 +190,15 @@ class ExportingTests(unittest.TestCase):
 
         self.assertIn(gif_bytes[:6], {b"GIF87a", b"GIF89a"})
         self.assertGreater(len(gif_bytes), 2000)
+
+    def test_windows_static_export_requests_kaleido_shutdown(self) -> None:
+        figure = go.Figure(data=[go.Scatter(x=[0, 1], y=[0, 1])])
+
+        with mock.patch.object(exporting_module, "_plotly_to_image", return_value=b"png-bytes") as mocked_export:
+            export_plotly_figure(figure, image_format="png", width=640, height=480, scale=1, _shutdown_kaleido=True)
+
+        self.assertTrue(mocked_export.called)
+        self.assertTrue(mocked_export.call_args.kwargs["shutdown_after"])
 
 
 if __name__ == "__main__":

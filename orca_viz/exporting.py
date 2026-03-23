@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import importlib.util
 from functools import lru_cache
 import math
+import os
 from pathlib import Path
 import tempfile
 from typing import Any
@@ -76,6 +77,31 @@ ANIMATION_EXPORT_PRESETS: dict[str, AnimationExportPreset] = {
     "presentation": AnimationExportPreset("presentation", "Presentation", 1920, 1080, 16, 2, 0.62),
     "web": AnimationExportPreset("web", "Web Preview", 1440, 900, 10, 1, 0.60),
 }
+
+
+def _should_shutdown_kaleido_after_static_export() -> bool:
+    # Kaleido < 1 can leave a helper process running on Windows after pio.to_image().
+    # In CI this keeps `python -m unittest` alive until the GitHub Actions 6h hard limit.
+    return os.name == "nt"
+
+
+def _shutdown_kaleido_backend() -> None:
+    scope = getattr(getattr(pio, "kaleido", None), "scope", None)
+    shutdown = getattr(scope, "_shutdown_kaleido", None)
+    if callable(shutdown):
+        try:
+            shutdown()
+        except Exception:
+            pass
+
+
+def _plotly_to_image(*, shutdown_after: bool | None = None, **kwargs: Any) -> bytes:
+    try:
+        return pio.to_image(**kwargs)
+    finally:
+        should_shutdown = shutdown_after if shutdown_after is not None else _should_shutdown_kaleido_after_static_export()
+        if should_shutdown:
+            _shutdown_kaleido_backend()
 
 
 def is_3d_figure(figure: go.Figure) -> bool:
@@ -268,6 +294,7 @@ def export_plotly_figure(
     hide_colorbar: bool = False,
     margin_mode: str = "balanced",
     visual_style_key: str | None = None,
+    _shutdown_kaleido: bool | None = None,
 ) -> bytes:
     if image_format.lower() == "html":
         return export_plotly_html(
@@ -307,12 +334,13 @@ def export_plotly_figure(
         margin_mode=margin_mode,
         visual_style_key=visual_style_key,
     )
-    return pio.to_image(
-        export_figure,
+    return _plotly_to_image(
+        fig=export_figure,
         format=image_format,
         width=width or preset.width,
         height=height or preset.height,
         scale=scale or preset.scale,
+        shutdown_after=_shutdown_kaleido,
     )
 
 
@@ -447,6 +475,7 @@ def export_pathway_animation(
                     height=resolved_height,
                     scale=resolved_scale,
                     background_is_transparent=background_is_transparent,
+                    shutdown_after=False,
                 )
 
                 composed = structure_image
@@ -470,6 +499,7 @@ def export_pathway_animation(
                         height=resolved_height,
                         scale=resolved_scale,
                         background_is_transparent=background_is_transparent,
+                        shutdown_after=False,
                     )
                     composed = _compose_animation_frame(
                         structure_image,
@@ -481,6 +511,7 @@ def export_pathway_animation(
                 writer.append_data(_image_to_ndarray(composed, transparent=background_is_transparent))
         finally:
             writer.close()
+            _shutdown_kaleido_backend()
         return output_path.read_bytes()
 
 
@@ -488,7 +519,7 @@ def export_pathway_animation(
 def static_image_export_available() -> bool:
     try:
         probe = go.Figure(data=[go.Scatter(x=[0, 1], y=[0, 1])])
-        pio.to_image(probe, format="png", width=32, height=32, scale=1)
+        _plotly_to_image(fig=probe, format="png", width=32, height=32, scale=1, shutdown_after=True)
     except Exception:
         return False
     return True
@@ -501,6 +532,7 @@ def _export_figure_to_pil(
     height: int,
     scale: int,
     background_is_transparent: bool,
+    shutdown_after: bool | None = None,
 ) -> Image.Image:
     image_bytes = export_plotly_figure(
         figure,
@@ -511,6 +543,7 @@ def _export_figure_to_pil(
         preset_key="paper",
         profile_key="faithful",
         transparent_background=background_is_transparent,
+        _shutdown_kaleido=shutdown_after,
     )
     image = Image.open(BytesIO(image_bytes))
     return image.convert("RGBA")
