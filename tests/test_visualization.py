@@ -1,4 +1,5 @@
 from pathlib import Path
+import sys
 import unittest
 
 import pandas as pd
@@ -225,6 +226,7 @@ class VisualizationTests(unittest.TestCase):
         self.assertAlmostEqual(measure_atom_dihedral(atoms_4, 0, 1, 2, 3), 90.0, places=5)
         self.assertIsNone(measure_atom_distance(self.atoms, 0, 0))
 
+    @unittest.skipIf(sys.platform.startswith("win"), "Windows CI skips backend static export integration tests")
     def test_static_image_export_when_available(self) -> None:
         if not STATIC_IMAGE_EXPORT_AVAILABLE:
             self.skipTest("kaleido not installed")

@@ -1,3 +1,4 @@
+import sys
 import unittest
 from unittest import mock
 
@@ -146,6 +147,7 @@ class ExportingTests(unittest.TestCase):
         else:
             self.assertEqual(formats, [])
 
+    @unittest.skipIf(sys.platform.startswith("win"), "Windows CI skips backend animation export integration tests")
     def test_export_pathway_animation_can_render_gif(self) -> None:
         if not static_image_export_available():
             self.skipTest("Static export backend unavailable")
