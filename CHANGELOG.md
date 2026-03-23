@@ -2,6 +2,24 @@
 
 All notable changes to this project are documented here.
 
+## [1.0.1] - 2026-03-23
+
+### Fixed
+
+- Unified local ORCA tool discovery so the Environment Doctor, GBW page, and CLI doctor all use the same runtime backend
+- Hardened local Linux / Ubuntu desktop detection for GUI-launched sessions where the Python process PATH differs from the login-shell PATH
+- Added login-shell assisted lookup via `command -v`, `type -P`, and `type -a` so locally installed `orca_plot`, `orca_2json`, and sibling tools are detected more reliably
+- Normalized discovered tool paths through `realpath` semantics so symlinked local installs resolve consistently
+- Made user-provided ORCA path hints shared across pages so a manually supplied local install path is honored consistently in both the environment page and GBW workflows
+- Added clearer local diagnostics for process PATH, shell PATH, detection source, and failure reason when a tool is missing
+
+### Validation
+
+- Re-ran `python -m compileall -q app.py orca_viz tests`
+- Re-ran `python -m unittest tests.test_orca_runtime`
+- Re-ran `python -m unittest discover -s tests`
+- Re-ran `python -m orca_viz.cli doctor --json` to verify live local tool discovery output
+
 ## [1.0.0] - 2026-03-22
 
 ### Major Update

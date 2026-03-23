@@ -12,7 +12,7 @@ from ..orca_runtime import (
     python_environment_dataframe,
     report_as_dict,
 )
-from .common import render_page_note
+from .common import get_shared_orca_path_hint, render_page_note, set_shared_orca_path_hint
 
 
 TOOL_CATEGORY_LABELS = {
@@ -42,8 +42,10 @@ def render_environment_doctor() -> None:
         st.subheader(tr("环境检测"))
         path_hint = st.text_input(
             tr("ORCA 安装目录、ORCA_HOME 或任意 ORCA 工具路径"),
+            value=get_shared_orca_path_hint(),
             key="environment-doctor-path-hint",
         )
+        set_shared_orca_path_hint(path_hint)
         st.checkbox(tr("显示可选工具"), value=True, key="environment-doctor-show-optional")
         st.button(tr("刷新环境检测"), key="environment-doctor-refresh")
 
@@ -90,7 +92,29 @@ def render_environment_doctor() -> None:
     with tabs[0]:
         tool_df = _tool_dataframe(report, show_optional=show_optional)
         st.dataframe(tool_df, hide_index=True, use_container_width=True)
-        st.caption(tr("未提供路径提示时，程序会自动扫描 PATH、ORCA_HOME、登录 shell 环境和常见安装目录。"))
+        st.caption(
+            tr(
+                "未提供路径提示时，程序会自动扫描当前 Python PATH、ORCA_HOME 类环境变量、登录 shell PATH、shell 解析结果和常见安装目录。"
+            )
+        )
+        with st.expander(tr("本地工具发现调试"), expanded=False):
+            st.markdown(f"**{tr('当前 Python 进程 PATH')}**")
+            st.code(report.process_path or tr("空"), language="text")
+            st.markdown(f"**{tr('登录 shell PATH')}**")
+            st.code(report.shell_path or tr("未检测到"), language="text")
+            st.markdown(f"**{tr('当前登录 shell')}**")
+            st.code(report.shell_executable or tr("未检测到"), language="text")
+            debug_rows = [
+                (tr("共享路径提示"), report.path_hint or tr("未提供")),
+                ("ORCA_HOME", report.env_orca_home or tr("未设置")),
+                (tr("登录 shell ORCA_HOME"), report.shell_orca_home or tr("未设置")),
+                (tr("显式 ORCA_HOME 提示"), report.orca_home_hint or tr("未提供")),
+            ]
+            st.dataframe(
+                pd.DataFrame(debug_rows, columns=[tr("字段"), tr("值")]),
+                hide_index=True,
+                use_container_width=True,
+            )
 
     with tabs[1]:
         package_df = python_environment_dataframe(report).rename(
@@ -179,6 +203,8 @@ def _tool_dataframe(report: object, *, show_optional: bool) -> pd.DataFrame:
             "required": tr("必要"),
             "available": tr("可用"),
             "path": tr("路径"),
+            "resolved_via": tr("检测来源"),
+            "failure_reason": tr("失败原因"),
         }
     )
     return localized

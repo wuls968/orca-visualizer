@@ -6,7 +6,12 @@ from pathlib import Path
 import subprocess
 import sys
 
-from .orca_runtime import detect_orca_environment, orca_environment_recommendations, report_as_dict
+from .orca_runtime import (
+    detect_orca_environment,
+    orca_discovery_method_label,
+    orca_environment_recommendations,
+    report_as_dict,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -67,6 +72,13 @@ def _format_text_report(report: object) -> str:
         f"Python: {payload['python_version']} ({payload['python_executable']})",
         f"ORCA home: {payload['orca_home'] or 'not detected'}",
         f"ORCA version: {payload['detected_orca_version'] or 'unknown'}",
+        f"Process PATH: {payload['process_path'] or '-'}",
+        f"Shell: {payload['shell_executable'] or 'not detected'}",
+        f"Shell PATH: {payload['shell_path'] or 'not detected'}",
+        f"Path hint: {payload['path_hint'] or '-'}",
+        f"ORCA_HOME hint: {payload['orca_home_hint'] or '-'}",
+        f"ORCA_HOME (process): {payload['env_orca_home'] or '-'}",
+        f"ORCA_HOME (shell): {payload['shell_orca_home'] or '-'}",
         f"Required tools: {payload['available_required_tool_count']}/{payload['required_tool_count']}",
         "",
         "Detected ORCA utilities:",
@@ -75,7 +87,11 @@ def _format_text_report(report: object) -> str:
         status = "OK" if tool["available"] else "MISS"
         required = "required" if tool["required"] else "optional"
         path = tool["path"] or "-"
-        lines.append(f"  [{status}] {tool['key']} ({required}) -> {path}")
+        via = orca_discovery_method_label(tool.get("resolved_via")) or "-"
+        failure_reason = tool.get("failure_reason") or "-"
+        lines.append(f"  [{status}] {tool['key']} ({required}) -> {path} | via: {via}")
+        if failure_reason != "-":
+            lines.append(f"      reason: {failure_reason}")
 
     recommendations = orca_environment_recommendations(report)
     if recommendations:

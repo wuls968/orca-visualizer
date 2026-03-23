@@ -202,7 +202,11 @@ def list_available_densities(
     orca_plot_hint: str = "",
     timeout_seconds: int = 120,
 ) -> list[str]:
-    orca_plot = resolve_orca_tool("orca_plot", path_hint=orca_plot_hint)
+    orca_plot = resolve_orca_tool(
+        "orca_plot",
+        path_hint=orca_plot_hint,
+        orca_home_hint=orca_plot_hint,
+    )
     if orca_plot is None:
         raise FileNotFoundError(tr("未找到 orca_plot。"))
     _ensure_density_sidecars(gbw_data)
@@ -241,7 +245,11 @@ def generate_cube_from_gbw(
     operator: int = 0,
     timeout_seconds: int = 300,
 ) -> tuple[CubeData, dict[str, Any]]:
-    orca_plot = resolve_orca_tool("orca_plot", path_hint=orca_plot_hint)
+    orca_plot = resolve_orca_tool(
+        "orca_plot",
+        path_hint=orca_plot_hint,
+        orca_home_hint=orca_plot_hint,
+    )
     if orca_plot is None:
         raise FileNotFoundError(
             tr("未找到 orca_plot。请在软件中填写 ORCA 安装目录或 orca_plot 可执行文件路径。")

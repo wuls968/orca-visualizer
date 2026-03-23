@@ -65,6 +65,8 @@ PLOTLY_MODEBAR_PREFIX_TRANSLATIONS = {
     },
 }
 
+SHARED_ORCA_PATH_HINT_KEY = "shared-local-orca-path-hint"
+
 
 def inject_app_styles() -> None:
     palette = {
@@ -428,6 +430,14 @@ def image_mime_type(file_name: str) -> str:
 
 def slug_key(value: str) -> str:
     return value.replace(".", "-").replace("/", "-").replace(" ", "-").lower()
+
+
+def get_shared_orca_path_hint(default: str = "") -> str:
+    return str(st.session_state.get(SHARED_ORCA_PATH_HINT_KEY, default)).strip()
+
+
+def set_shared_orca_path_hint(value: str) -> None:
+    st.session_state[SHARED_ORCA_PATH_HINT_KEY] = value.strip()
 
 
 def render_global_structure_controls() -> None:

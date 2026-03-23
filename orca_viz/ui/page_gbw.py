@@ -13,8 +13,15 @@ from ..gbw import (
     resolve_property_orbital_index,
 )
 from ..i18n import tr
-from ..orca_runtime import resolve_orca_tool
-from .common import render_page_note, render_task_state, set_task_state, slug_key
+from ..orca_runtime import orca_discovery_method_label, resolve_orca_tool_details
+from .common import (
+    get_shared_orca_path_hint,
+    render_page_note,
+    render_task_state,
+    set_shared_orca_path_hint,
+    set_task_state,
+    slug_key,
+)
 from .page_cube import render_cube_analysis
 
 
@@ -34,9 +41,25 @@ def render_gbw_analysis(gbw_data: GbwData) -> None:
 
     render_task_state(task_key)
 
-    detected_orca_plot = resolve_orca_tool("orca_plot")
     property_summary = gbw_data.metadata.get("property_summary", {})
     property_sources = gbw_data.metadata.get("property_summary_sources", [])
+    shared_path_hint = get_shared_orca_path_hint()
+    default_resolution = resolve_orca_tool_details(
+        "orca_plot",
+        path_hint=shared_path_hint,
+        orca_home_hint=shared_path_hint,
+    )
+    orca_plot_hint = st.text_input(
+        tr("ORCA 安装目录或 orca_plot 路径"),
+        value=shared_path_hint or (default_resolution.path or ""),
+        key=f"{base_key}-orca-plot-hint",
+    )
+    set_shared_orca_path_hint(orca_plot_hint)
+    detected_orca_plot = resolve_orca_tool_details(
+        "orca_plot",
+        path_hint=orca_plot_hint,
+        orca_home_hint=orca_plot_hint,
+    )
     summary_cols = st.columns(7)
     yes_no = lambda flag: tr("是") if flag else tr("否")
     summary_cols[0].metric(tr("文件"), gbw_data.source_name)
@@ -45,26 +68,34 @@ def render_gbw_analysis(gbw_data: GbwData) -> None:
     summary_cols[3].metric(tr("有 property.json"), yes_no("property_json" in gbw_data.sidecars))
     summary_cols[4].metric(tr("有 property.txt"), yes_no("property_txt" in gbw_data.sidecars))
     summary_cols[5].metric(tr("有 .xyz"), yes_no("xyz" in gbw_data.sidecars))
-    summary_cols[6].metric(tr("检测到 orca_plot"), yes_no(bool(detected_orca_plot)))
-    if not detected_orca_plot:
-        st.info(tr("如果这里没有检测到 `orca_plot`，可切到“环境检测”页查看 ORCA 工具可用性与安装建议。"))
+    summary_cols[6].metric(tr("检测到 orca_plot"), yes_no(bool(detected_orca_plot.path)))
+    if detected_orca_plot.path:
+        st.caption(
+            tr(
+                "`orca_plot` 发现来源：{source}",
+                source=orca_discovery_method_label(detected_orca_plot.resolved_via) or tr("未知"),
+            )
+        )
+    else:
+        st.info(tr("如果这里没有检测到 `orca_plot`，可切到“环境检测”页查看本地 ORCA 工具可用性与安装建议。"))
+        if detected_orca_plot.failure_reason:
+            st.caption(tr("失败原因：{reason}", reason=detected_orca_plot.failure_reason))
 
     with st.expander(tr("GBW 资源信息"), expanded=False):
         st.json(
             {
                 "gbw_path": str(gbw_data.file_path),
                 "sidecars": {key: str(value) for key, value in gbw_data.sidecars.items()},
-                "detected_orca_plot": str(detected_orca_plot) if detected_orca_plot else None,
+                "shared_path_hint": get_shared_orca_path_hint() or None,
+                "detected_orca_plot": detected_orca_plot.path,
+                "detected_orca_plot_real_path": detected_orca_plot.real_path,
+                "detected_orca_plot_via": detected_orca_plot.resolved_via,
+                "detected_orca_plot_failure_reason": detected_orca_plot.failure_reason,
+                "detected_orca_plot_searches": detected_orca_plot.searched_locations,
                 "property_summary": property_summary or None,
                 "property_summary_sources": property_sources or None,
             }
         )
-
-    orca_plot_hint = st.text_input(
-        tr("ORCA 安装目录或 orca_plot 路径"),
-        value=str(detected_orca_plot) if detected_orca_plot else "",
-        key=f"{base_key}-orca-plot-hint",
-    )
 
     available_density_key = f"{base_key}-gbw-available-densities"
     density_error_key = f"{base_key}-gbw-density-error"
