@@ -66,6 +66,13 @@ PLOTLY_MODEBAR_PREFIX_TRANSLATIONS = {
 }
 
 SHARED_ORCA_PATH_HINT_KEY = "shared-local-orca-path-hint"
+MODEL_SIZE_STATE_SUFFIXES = (
+    "preset",
+    "sphere-scale",
+    "stick-radius",
+    "space-filling-scale",
+    "wireframe-line-width",
+)
 
 
 def inject_app_styles() -> None:
@@ -559,11 +566,20 @@ def resolve_model_size_settings(page_key: str | None = None) -> ModelSizeSetting
 
 def _render_model_size_controls(prefix: str, *, defaults: ModelSizeSettings) -> None:
     _ensure_model_size_state(prefix, defaults)
+    preset_value = str(st.session_state.get(f"{prefix}-preset", defaults.preset_key))
+    sphere_scale = float(st.session_state.get(f"{prefix}-sphere-scale", defaults.sphere_scale))
+    stick_radius = float(st.session_state.get(f"{prefix}-stick-radius", defaults.stick_radius))
+    space_filling_scale = float(
+        st.session_state.get(f"{prefix}-space-filling-scale", defaults.space_filling_scale)
+    )
+    wireframe_line_width = float(
+        st.session_state.get(f"{prefix}-wireframe-line-width", defaults.wireframe_line_width)
+    )
     st.selectbox(
         tr("模型尺寸预设"),
         options=["compact", "standard", "presentation"],
         index=["compact", "standard", "presentation"].index(
-            st.session_state.get(f"{prefix}-preset", defaults.preset_key)
+            preset_value if preset_value in {"compact", "standard", "presentation"} else defaults.preset_key
         ),
         format_func=lambda value: {
             "compact": tr("紧凑"),
@@ -579,7 +595,7 @@ def _render_model_size_controls(prefix: str, *, defaults: ModelSizeSettings) -> 
         tr("球大小"),
         min_value=0.15,
         max_value=0.50,
-        value=float(st.session_state[f"{prefix}-sphere-scale"]),
+        value=sphere_scale,
         step=0.01,
         key=f"{prefix}-sphere-scale",
     )
@@ -587,7 +603,7 @@ def _render_model_size_controls(prefix: str, *, defaults: ModelSizeSettings) -> 
         tr("棍粗细"),
         min_value=0.08,
         max_value=0.35,
-        value=float(st.session_state[f"{prefix}-stick-radius"]),
+        value=stick_radius,
         step=0.01,
         key=f"{prefix}-stick-radius",
     )
@@ -596,7 +612,7 @@ def _render_model_size_controls(prefix: str, *, defaults: ModelSizeSettings) -> 
         tr("空间填充比例"),
         min_value=0.70,
         max_value=1.35,
-        value=float(st.session_state[f"{prefix}-space-filling-scale"]),
+        value=space_filling_scale,
         step=0.01,
         key=f"{prefix}-space-filling-scale",
     )
@@ -604,7 +620,7 @@ def _render_model_size_controls(prefix: str, *, defaults: ModelSizeSettings) -> 
         tr("线框粗细"),
         min_value=0.8,
         max_value=4.5,
-        value=float(st.session_state[f"{prefix}-wireframe-line-width"]),
+        value=wireframe_line_width,
         step=0.1,
         key=f"{prefix}-wireframe-line-width",
     )
@@ -619,9 +635,23 @@ def _apply_model_size_preset_to_state(prefix: str) -> None:
 
 
 def _ensure_model_size_state(prefix: str, defaults: ModelSizeSettings) -> None:
-    if f"{prefix}-initialized" in st.session_state:
+    required_keys = [f"{prefix}-{suffix}" for suffix in MODEL_SIZE_STATE_SUFFIXES]
+    if f"{prefix}-initialized" in st.session_state and all(key in st.session_state for key in required_keys):
         return
-    _set_model_size_state(prefix, defaults)
+    merged = clamp_model_size_settings(
+        ModelSizeSettings(
+            preset_key=str(st.session_state.get(f"{prefix}-preset", defaults.preset_key)),
+            sphere_scale=float(st.session_state.get(f"{prefix}-sphere-scale", defaults.sphere_scale)),
+            stick_radius=float(st.session_state.get(f"{prefix}-stick-radius", defaults.stick_radius)),
+            space_filling_scale=float(
+                st.session_state.get(f"{prefix}-space-filling-scale", defaults.space_filling_scale)
+            ),
+            wireframe_line_width=float(
+                st.session_state.get(f"{prefix}-wireframe-line-width", defaults.wireframe_line_width)
+            ),
+        )
+    )
+    _set_model_size_state(prefix, merged)
     st.session_state[f"{prefix}-initialized"] = True
 
 

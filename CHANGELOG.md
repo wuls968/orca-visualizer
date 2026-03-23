@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented here.
 
+## [1.0.5] - 2026-03-23
+
+### Fixed
+
+- Repaired the global model-size session-state migration so older saved UI state no longer crashes the app with missing keys such as `global-model-size-sphere-scale`
+- Made the structure-size controls auto-heal partial legacy state instead of assuming the full key set already exists
+- Hardened slider initialization so missing values fall back to preset defaults rather than raising a Streamlit `KeyError`
+
+### Validation
+
+- Re-ran `python -m unittest tests.test_ui_common`
+- Re-ran `python -m unittest discover -s tests`
+- Re-ran `python -m compileall -q app.py orca_viz tests`
+
 ## [1.0.4] - 2026-03-23
 
 ### Fixed

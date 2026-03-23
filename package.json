@@ -1,6 +1,6 @@
 {
   "name": "orca-visualizer",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Cross-platform ORCA post-processing and visualization app with a bundled npm launcher.",
   "license": "MIT",
   "repository": {
