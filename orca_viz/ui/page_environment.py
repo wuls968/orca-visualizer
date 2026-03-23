@@ -100,8 +100,12 @@ def render_environment_doctor() -> None:
         with st.expander(tr("本地工具发现调试"), expanded=False):
             st.markdown(f"**{tr('当前 Python 进程 PATH')}**")
             st.code(report.process_path or tr("空"), language="text")
-            st.markdown(f"**{tr('登录 shell PATH')}**")
+            st.markdown(f"**{tr('合并后的 shell PATH')}**")
             st.code(report.shell_path or tr("未检测到"), language="text")
+            st.markdown(f"**{tr('登录 shell PATH')}**")
+            st.code(report.login_shell_path or tr("未检测到"), language="text")
+            st.markdown(f"**{tr('交互式 shell PATH')}**")
+            st.code(report.interactive_shell_path or tr("未检测到"), language="text")
             st.markdown(f"**{tr('当前登录 shell')}**")
             st.code(report.shell_executable or tr("未检测到"), language="text")
             debug_rows = [

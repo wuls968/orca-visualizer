@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented here.
 
+## [1.0.2] - 2026-03-23
+
+### Fixed
+
+- Extended local ORCA discovery for Ubuntu/Linux desktop sessions by combining login-shell PATH and interactive-shell PATH instead of relying on a single shell mode
+- Added fallback support for installations exposed only from interactive shell startup files such as `.bashrc`
+- Added lightweight home-directory root scanning so installs like `~/orca_6_1_0/orca` are discovered more reliably
+- Reduced ORCA doctor / environment-page latency by delaying shell command fallback until normal PATH and directory scans fail, and by caching shell lookup results
+- Expanded doctor diagnostics to show merged shell PATH, login-shell PATH, and interactive-shell PATH separately
+
+### Validation
+
+- Re-ran `python -m compileall -q app.py orca_viz tests`
+- Re-ran `python -m unittest tests.test_orca_runtime`
+- Re-ran `python -m unittest discover -s tests`
+- Re-ran `python -m orca_viz.cli doctor --json`
+
 ## [1.0.1] - 2026-03-23
 
 ### Fixed

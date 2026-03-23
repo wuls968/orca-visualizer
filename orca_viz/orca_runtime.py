@@ -62,6 +62,8 @@ class OrcaEnvironmentReport:
     process_path: str
     shell_path: str | None
     shell_executable: str | None
+    login_shell_path: str | None
+    interactive_shell_path: str | None
     tools: list[OrcaToolStatus]
     python_packages: dict[str, str]
 
@@ -118,21 +120,28 @@ ORCA_SEED_EXECUTABLES = [
     "orca_2mkl",
 ]
 
+_SHELL_LOOKUP_CACHE: dict[tuple[str, str, str, str], tuple[_DiscoveryCandidate, ...]] = {}
+
 DISCOVERY_METHOD_LABELS = {
     "path_hint_file": "user path hint (file)",
     "path_hint_dir": "user path hint (directory)",
     "orca_home_hint_file": "ORCA_HOME hint (file)",
     "orca_home_hint_dir": "ORCA_HOME hint (directory)",
     "process_which": "current process PATH / shutil.which",
-    "shell_command_v": "login shell command -v",
-    "shell_type_p": "login shell type -P",
-    "shell_type_a": "login shell type -a",
+    "shell_login_command_v": "login shell command -v",
+    "shell_login_type_p": "login shell type -P",
+    "shell_login_type_a": "login shell type -a",
+    "shell_interactive_command_v": "interactive shell command -v",
+    "shell_interactive_type_p": "interactive shell type -P",
+    "shell_interactive_type_a": "interactive shell type -a",
     "process_seed": "current process PATH via sibling ORCA tool",
-    "shell_seed": "login shell via sibling ORCA tool",
+    "shell_login_seed": "login shell via sibling ORCA tool",
+    "shell_interactive_seed": "interactive shell via sibling ORCA tool",
     "env_hint_file": "ORCA_HOME-like env var (file)",
     "env_hint_dir": "ORCA_HOME-like env var (directory)",
     "process_path_scan": "current process PATH directory scan",
     "login_shell_path_scan": "login shell PATH directory scan",
+    "interactive_shell_path_scan": "interactive shell PATH directory scan",
     "common_dir_scan": "common local installation scan",
 }
 
@@ -197,6 +206,8 @@ def detect_orca_environment(
         process_path=process_path,
         shell_path=login_env.get("PATH", "").strip() or None,
         shell_executable=login_env.get("SHELL", "").strip() or None,
+        login_shell_path=login_env.get("LOGIN_SHELL_PATH", "").strip() or None,
+        interactive_shell_path=login_env.get("INTERACTIVE_SHELL_PATH", "").strip() or None,
         tools=statuses,
         python_packages=_python_package_versions(),
     )
@@ -216,20 +227,25 @@ def resolve_orca_executable_details(
         path_hint=path_hint,
         orca_home_hint=orca_home_hint,
         login_env=login_env,
+        include_shell_commands=False,
     )
+    resolved = _resolve_executable_candidate(candidates)
+    if resolved is None:
+        shell_fallback_candidates = _shell_fallback_candidates(executable_names, login_env)
+        if shell_fallback_candidates:
+            candidates.extend(shell_fallback_candidates)
+            resolved = _resolve_executable_candidate(shell_fallback_candidates)
     searched_locations = [f"{_method_label(candidate.method)} -> {candidate.path}" for candidate in candidates[:20]]
 
-    for candidate in candidates:
-        if candidate.path.exists() and candidate.path.is_file() and os.access(candidate.path, os.X_OK):
-            resolved = candidate.path.resolve()
-            return OrcaToolResolution(
-                executable=executable,
-                path=str(resolved),
-                real_path=str(resolved),
-                resolved_via=candidate.method,
-                failure_reason=None,
-                searched_locations=searched_locations,
-            )
+    if resolved is not None:
+        return OrcaToolResolution(
+            executable=executable,
+            path=str(resolved.path),
+            real_path=str(resolved.path),
+            resolved_via=resolved.method,
+            failure_reason=None,
+            searched_locations=searched_locations,
+        )
 
     if searched_locations:
         failure_reason = (
@@ -465,6 +481,7 @@ def _candidate_paths(
     path_hint: str,
     orca_home_hint: str,
     login_env: dict[str, str],
+    include_shell_commands: bool,
 ) -> list[_DiscoveryCandidate]:
     candidates: list[_DiscoveryCandidate] = []
     candidate_roots: list[tuple[Path, str]] = []
@@ -497,14 +514,15 @@ def _candidate_paths(
             which_path = Path(which_result)
             candidates.append(_DiscoveryCandidate(which_path, "process_which"))
             candidate_roots.extend((root, "process_which") for root in _candidate_roots_from_executable(which_path))
-        candidates.extend(_shell_lookup_candidates(executable_name, login_env))
 
     for seed_executable in ORCA_SEED_EXECUTABLES:
         which_result = shutil.which(seed_executable)
         if which_result:
             candidate_roots.extend((root, "process_seed") for root in _candidate_roots_from_executable(Path(which_result)))
-        for shell_candidate in _shell_lookup_candidates(seed_executable, login_env):
-            candidate_roots.extend((root, "shell_seed") for root in _candidate_roots_from_executable(shell_candidate.path))
+        if include_shell_commands:
+            for shell_candidate in _shell_lookup_candidates(seed_executable, login_env):
+                seed_method = "shell_interactive_seed" if "interactive" in shell_candidate.method else "shell_login_seed"
+                candidate_roots.extend((root, seed_method) for root in _candidate_roots_from_executable(shell_candidate.path))
 
     for env_home in _orca_env_hints(login_env):
         env_path = Path(env_home).expanduser()
@@ -526,10 +544,15 @@ def _candidate_paths(
         candidate_roots.append((path_dir, "process_path_scan"))
         candidate_roots.extend((root, "process_path_scan") for root in _scan_orca_roots(path_dir))
 
-    for path_entry in _split_path_entries(login_env.get("PATH", "")):
+    for path_entry in _split_path_entries(login_env.get("LOGIN_SHELL_PATH", "")):
         path_dir = Path(path_entry)
         candidate_roots.append((path_dir, "login_shell_path_scan"))
         candidate_roots.extend((root, "login_shell_path_scan") for root in _scan_orca_roots(path_dir))
+
+    for path_entry in _split_path_entries(login_env.get("INTERACTIVE_SHELL_PATH", "")):
+        path_dir = Path(path_entry)
+        candidate_roots.append((path_dir, "interactive_shell_path_scan"))
+        candidate_roots.extend((root, "interactive_shell_path_scan") for root in _scan_orca_roots(path_dir))
 
     for base_dir in _common_orca_directories():
         if not base_dir.exists():
@@ -556,25 +579,30 @@ def _load_login_shell_orca_env() -> dict[str, str]:
         return {}
 
     shell = os.environ.get("SHELL", "").strip() or shutil.which("bash") or "/bin/bash"
-    probe_parts = ['printf "SHELL=%s\\nPATH=%s\\n" "$SHELL" "$PATH"']
-    for env_name in ORCA_HOME_ENV_VARS:
-        probe_parts.append(f'printf "{env_name}=%s\\n" "${env_name}"')
-    completed = subprocess.run(
-        [shell, "-lc", "; ".join(probe_parts)],
-        capture_output=True,
-        text=True,
-        check=False,
+    login_shell_env = _capture_shell_env(shell, "-lc")
+    interactive_shell_env = _capture_shell_env(shell, "-ic")
+    merged_path = _merge_path_values(
+        [
+            interactive_shell_env.get("PATH", ""),
+            login_shell_env.get("PATH", ""),
+        ]
     )
-    if completed.returncode != 0:
-        return {"SHELL": shell}
-
-    env_data: dict[str, str] = {}
-    for line in completed.stdout.splitlines():
-        if "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        env_data[key.strip()] = value.strip()
-    env_data.setdefault("SHELL", shell)
+    env_data: dict[str, str] = {
+        "SHELL": interactive_shell_env.get("SHELL", "").strip()
+        or login_shell_env.get("SHELL", "").strip()
+        or shell,
+        "LOGIN_SHELL_PATH": login_shell_env.get("PATH", "").strip(),
+        "INTERACTIVE_SHELL_PATH": interactive_shell_env.get("PATH", "").strip(),
+    }
+    if merged_path:
+        env_data["PATH"] = merged_path
+    for env_name in ORCA_HOME_ENV_VARS:
+        value = (
+            interactive_shell_env.get(env_name, "").strip()
+            or login_shell_env.get(env_name, "").strip()
+        )
+        if value:
+            env_data[env_name] = value
     return env_data
 
 
@@ -599,6 +627,7 @@ def _common_orca_directories() -> list[Path]:
         ]
         return [Path(root) for root in roots if root]
     return [
+        Path.home(),
         Path.home() / "orca",
         Path.home() / "opt",
         Path.home() / "Library",
@@ -656,24 +685,39 @@ def _shell_lookup_candidates(executable_name: str, login_env: dict[str, str]) ->
     shell = login_env.get("SHELL", "").strip() or os.environ.get("SHELL", "").strip() or shutil.which("bash")
     if not shell:
         return []
+    cache_key = (
+        shell,
+        login_env.get("LOGIN_SHELL_PATH", ""),
+        login_env.get("INTERACTIVE_SHELL_PATH", ""),
+        executable_name,
+    )
+    cached = _SHELL_LOOKUP_CACHE.get(cache_key)
+    if cached is not None:
+        return list(cached)
     candidates: list[_DiscoveryCandidate] = []
-    for method, command in [
-        ("shell_command_v", f"command -v {shlex.quote(executable_name)} 2>/dev/null || true"),
-        ("shell_type_p", f"type -P {shlex.quote(executable_name)} 2>/dev/null || true"),
-        ("shell_type_a", f"type -a {shlex.quote(executable_name)} 2>/dev/null || true"),
+    for shell_mode, method_prefix in [
+        ("-lc", "shell_login"),
+        ("-ic", "shell_interactive"),
     ]:
-        try:
-            completed = subprocess.run(
-                [shell, "-lc", command],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
-            )
-        except Exception:
-            continue
-        candidates.extend(_parse_shell_lookup_output(completed.stdout, method))
-    return candidates
+        for method_suffix, command in [
+            ("command_v", f"command -v {shlex.quote(executable_name)} 2>/dev/null || true"),
+            ("type_p", f"type -P {shlex.quote(executable_name)} 2>/dev/null || true"),
+            ("type_a", f"type -a {shlex.quote(executable_name)} 2>/dev/null || true"),
+        ]:
+            try:
+                completed = subprocess.run(
+                    [shell, shell_mode, command],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                )
+            except Exception:
+                continue
+            candidates.extend(_parse_shell_lookup_output(completed.stdout, f"{method_prefix}_{method_suffix}"))
+    deduped = _dedupe_discovery_candidates(candidates)
+    _SHELL_LOOKUP_CACHE[cache_key] = tuple(deduped)
+    return list(deduped)
 
 
 def _parse_shell_lookup_output(stdout: str, method: str) -> list[_DiscoveryCandidate]:
@@ -699,6 +743,45 @@ def _split_path_entries(raw_path: str) -> list[str]:
     return [entry.strip() for entry in raw_path.split(path_separator) if entry.strip()]
 
 
+def _merge_path_values(raw_paths: list[str]) -> str:
+    entries: list[str] = []
+    seen: set[str] = set()
+    for raw_path in raw_paths:
+        for entry in _split_path_entries(raw_path):
+            if entry in seen:
+                continue
+            seen.add(entry)
+            entries.append(entry)
+    separator = ";" if os.name == "nt" else ":"
+    return separator.join(entries)
+
+
+def _capture_shell_env(shell: str, shell_mode: str) -> dict[str, str]:
+    probe_parts = ['printf "SHELL=%s\\nPATH=%s\\n" "$SHELL" "$PATH"']
+    for env_name in ORCA_HOME_ENV_VARS:
+        probe_parts.append(f'printf "{env_name}=%s\\n" "${env_name}"')
+    try:
+        completed = subprocess.run(
+            [shell, shell_mode, "; ".join(probe_parts)],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=8,
+        )
+    except Exception:
+        return {}
+    if completed.returncode != 0 and not completed.stdout:
+        return {}
+
+    env_data: dict[str, str] = {}
+    for line in completed.stdout.splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        env_data[key.strip()] = value.strip()
+    return env_data
+
+
 def _first_non_empty(values: Any) -> str | None:
     for value in values:
         if value:
@@ -710,3 +793,39 @@ def _method_label(method: str | None) -> str | None:
     if method is None:
         return None
     return DISCOVERY_METHOD_LABELS.get(method, method)
+
+
+def _resolve_executable_candidate(candidates: list[_DiscoveryCandidate]) -> _DiscoveryCandidate | None:
+    for candidate in candidates:
+        if candidate.path.exists() and candidate.path.is_file() and os.access(candidate.path, os.X_OK):
+            return _DiscoveryCandidate(candidate.path.resolve(), candidate.method)
+    return None
+
+
+def _shell_fallback_candidates(
+    executable_names: list[str],
+    login_env: dict[str, str],
+) -> list[_DiscoveryCandidate]:
+    candidates: list[_DiscoveryCandidate] = []
+    candidate_roots: list[tuple[Path, str]] = []
+    for executable_name in executable_names:
+        candidates.extend(_shell_lookup_candidates(executable_name, login_env))
+    for seed_executable in ORCA_SEED_EXECUTABLES:
+        for shell_candidate in _shell_lookup_candidates(seed_executable, login_env):
+            seed_method = "shell_interactive_seed" if "interactive" in shell_candidate.method else "shell_login_seed"
+            candidate_roots.extend((root, seed_method) for root in _candidate_roots_from_executable(shell_candidate.path))
+    for root, method in candidate_roots:
+        candidates.extend(_executable_candidates_from_root(root, executable_names, method))
+    return _dedupe_discovery_candidates(candidates)
+
+
+def _dedupe_discovery_candidates(candidates: list[_DiscoveryCandidate]) -> list[_DiscoveryCandidate]:
+    deduped: list[_DiscoveryCandidate] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate.path.expanduser())
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(candidate)
+    return deduped

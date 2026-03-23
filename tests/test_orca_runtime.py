@@ -120,6 +120,30 @@ class OrcaRuntimeTests(unittest.TestCase):
             self.assertEqual(resolution.resolved_via, "shell_command_v")
             self.assertIsNone(resolution.failure_reason)
 
+    def test_load_shell_env_merges_login_and_interactive_paths(self) -> None:
+        def fake_run(command: list[str], **_: object) -> object:
+            shell_mode = command[1]
+            if shell_mode == "-lc":
+                return mock.Mock(
+                    returncode=0,
+                    stdout="SHELL=/bin/bash\nPATH=/usr/local/bin\nORCA_HOME=\nORCA_ROOT=\nORCA_DIR=\nORCA_BIN=\n",
+                    stderr="",
+                )
+            return mock.Mock(
+                returncode=0,
+                stdout="SHELL=/bin/bash\nPATH=/home/wls/orca_6_1_0:/usr/local/bin\nORCA_HOME=/home/wls/orca_6_1_0\nORCA_ROOT=\nORCA_DIR=\nORCA_BIN=\n",
+                stderr="",
+            )
+
+        with mock.patch("orca_viz.orca_runtime.subprocess.run", side_effect=fake_run):
+            shell_env = runtime._load_login_shell_orca_env()
+
+        self.assertEqual(shell_env["SHELL"], "/bin/bash")
+        self.assertEqual(shell_env["LOGIN_SHELL_PATH"], "/usr/local/bin")
+        self.assertEqual(shell_env["INTERACTIVE_SHELL_PATH"], "/home/wls/orca_6_1_0:/usr/local/bin")
+        self.assertTrue(shell_env["PATH"].startswith("/home/wls/orca_6_1_0"))
+        self.assertEqual(shell_env["ORCA_HOME"], "/home/wls/orca_6_1_0")
+
     def test_resolve_orca_executable_can_find_sibling_tools_from_orca_binary(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             install_dir = Path(temp_dir) / "orca_install" / "bin"
@@ -220,7 +244,7 @@ class OrcaRuntimeTests(unittest.TestCase):
                     return [runtime._DiscoveryCandidate(orca_plot, "shell_command_v")]
                 return []
 
-            with mock.patch.dict("os.environ", {"ORCA_HOME": ""}, clear=False), mock.patch(
+            with mock.patch.dict("os.environ", {"ORCA_HOME": "", "PATH": ""}, clear=False), mock.patch(
                 "orca_viz.orca_runtime.shutil.which",
                 side_effect=fake_which,
             ), mock.patch(
@@ -234,6 +258,34 @@ class OrcaRuntimeTests(unittest.TestCase):
 
             self.assertEqual(resolution.path, str(orca_plot.resolve()))
             self.assertEqual(resolution.resolved_via, "shell_command_v")
+
+    def test_common_directory_scan_can_find_install_directly_under_home(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_home = Path(temp_dir)
+            install_dir = fake_home / "orca_6_1_0"
+            install_dir.mkdir()
+            orca = install_dir / _tool_file_name("orca")
+            orca_plot = install_dir / _tool_file_name("orca_plot")
+            _write_executable(orca)
+            _write_executable(orca_plot)
+
+            with mock.patch.dict("os.environ", {"ORCA_HOME": "", "PATH": ""}, clear=False), mock.patch(
+                "orca_viz.orca_runtime.shutil.which",
+                return_value=None,
+            ), mock.patch(
+                "orca_viz.orca_runtime._load_login_shell_orca_env",
+                return_value={},
+            ), mock.patch(
+                "orca_viz.orca_runtime._shell_lookup_candidates",
+                return_value=[],
+            ), mock.patch(
+                "orca_viz.orca_runtime.Path.home",
+                return_value=fake_home,
+            ):
+                resolution = resolve_orca_tool_details("orca_plot")
+
+            self.assertEqual(resolution.path, str(orca_plot.resolve()))
+            self.assertEqual(resolution.resolved_via, "common_dir_scan")
 
     def test_path_hint_takes_priority_and_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -267,7 +319,12 @@ class OrcaRuntimeTests(unittest.TestCase):
             return_value=None,
         ), mock.patch(
             "orca_viz.orca_runtime._load_login_shell_orca_env",
-            return_value={"SHELL": "/bin/bash", "PATH": "/opt/orca/bin"},
+            return_value={
+                "SHELL": "/bin/bash",
+                "PATH": "/home/wls/orca_6_1_0:/opt/orca/bin",
+                "LOGIN_SHELL_PATH": "/opt/orca/bin",
+                "INTERACTIVE_SHELL_PATH": "/home/wls/orca_6_1_0:/opt/orca/bin",
+            },
         ), mock.patch(
             "orca_viz.orca_runtime._shell_lookup_candidates",
             return_value=[],
@@ -280,8 +337,10 @@ class OrcaRuntimeTests(unittest.TestCase):
         self.assertFalse(tool.available)
         self.assertIsNotNone(tool.failure_reason)
         self.assertEqual(report.process_path, "/usr/local/bin")
-        self.assertEqual(report.shell_path, "/opt/orca/bin")
+        self.assertEqual(report.shell_path, "/home/wls/orca_6_1_0:/opt/orca/bin")
         self.assertEqual(report.shell_executable, "/bin/bash")
+        self.assertEqual(report.login_shell_path, "/opt/orca/bin")
+        self.assertEqual(report.interactive_shell_path, "/home/wls/orca_6_1_0:/opt/orca/bin")
 
     def test_detect_orca_version_prefers_executable_output_then_falls_back_to_path(self) -> None:
         with mock.patch("orca_viz.orca_runtime.subprocess.run") as mocked_run:
