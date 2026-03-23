@@ -13,6 +13,11 @@ from typing import Any
 
 import pandas as pd
 
+try:
+    import pwd
+except ImportError:  # pragma: no cover - not available on Windows
+    pwd = None
+
 
 @dataclass(frozen=True)
 class OrcaToolSpec:
@@ -121,6 +126,7 @@ ORCA_SEED_EXECUTABLES = [
 ]
 
 _SHELL_LOOKUP_CACHE: dict[tuple[str, str, str, str], tuple[_DiscoveryCandidate, ...]] = {}
+_ORCA_SCORE_CACHE: dict[str, int] = {}
 
 DISCOVERY_METHOD_LABELS = {
     "path_hint_file": "user path hint (file)",
@@ -223,15 +229,14 @@ def resolve_orca_executable_details(
 ) -> OrcaToolResolution:
     executable_names = _executable_names(executable)
     login_env = login_env if login_env is not None else _load_login_shell_orca_env()
-    direct_candidates = _direct_candidate_paths(
+    explicit_candidates = _explicit_hint_candidate_paths(
         executable_names,
         path_hint=path_hint,
         orca_home_hint=orca_home_hint,
-        login_env=login_env,
     )
-    resolved = _resolve_executable_candidate(direct_candidates)
+    resolved = _resolve_executable_candidate(explicit_candidates)
     if resolved is not None:
-        searched_locations = [f"{_method_label(candidate.method)} -> {candidate.path}" for candidate in direct_candidates[:20]]
+        searched_locations = [f"{_method_label(candidate.method)} -> {candidate.path}" for candidate in explicit_candidates[:20]]
         return OrcaToolResolution(
             executable=executable,
             path=str(resolved.path),
@@ -241,8 +246,38 @@ def resolve_orca_executable_details(
             searched_locations=searched_locations,
         )
 
-    candidates: list[_DiscoveryCandidate] = list(direct_candidates)
+    direct_candidates = _direct_candidate_paths(
+        executable_names,
+        path_hint=path_hint,
+        orca_home_hint=orca_home_hint,
+        login_env=login_env,
+    )
     if not _is_orca_executable(executable_names):
+        resolved = _resolve_executable_candidate(direct_candidates)
+        if resolved is not None:
+            searched_locations = [f"{_method_label(candidate.method)} -> {candidate.path}" for candidate in direct_candidates[:20]]
+            return OrcaToolResolution(
+                executable=executable,
+                path=str(resolved.path),
+                real_path=str(resolved.path),
+                resolved_via=resolved.method,
+                failure_reason=None,
+                searched_locations=searched_locations,
+            )
+
+    candidates: list[_DiscoveryCandidate] = list(explicit_candidates)
+    candidates.extend(direct_candidates)
+    if _is_orca_executable(executable_names):
+        candidates.extend(
+            _candidate_paths(
+                executable_names,
+                path_hint=path_hint,
+                orca_home_hint=orca_home_hint,
+                login_env=login_env,
+                include_shell_commands=True,
+            )
+        )
+    else:
         candidates.extend(
             _candidates_from_detected_orca_anchor(
                 executable_names,
@@ -604,6 +639,30 @@ def _candidate_paths(
     return deduped
 
 
+def _explicit_hint_candidate_paths(
+    executable_names: list[str],
+    *,
+    path_hint: str,
+    orca_home_hint: str,
+) -> list[_DiscoveryCandidate]:
+    candidates: list[_DiscoveryCandidate] = []
+    for raw_hint, source_method_file, source_method_dir in [
+        (path_hint.strip(), "path_hint_file", "path_hint_dir"),
+        (orca_home_hint.strip(), "orca_home_hint_file", "orca_home_hint_dir"),
+    ]:
+        if not raw_hint:
+            continue
+        hinted = Path(raw_hint).expanduser()
+        if hinted.is_file():
+            if hinted.name in executable_names:
+                candidates.append(_DiscoveryCandidate(hinted, source_method_file))
+            for root in _candidate_roots_from_executable(hinted):
+                candidates.extend(_executable_candidates_from_root(root, executable_names, source_method_file))
+        elif hinted.is_dir():
+            candidates.extend(_executable_candidates_from_root(hinted, executable_names, source_method_dir))
+    return _dedupe_discovery_candidates(candidates)
+
+
 def _direct_candidate_paths(
     executable_names: list[str],
     *,
@@ -717,11 +776,14 @@ def _common_orca_directories() -> list[Path]:
             str(Path.home() / "AppData" / "Local"),
         ]
         return [Path(root) for root in roots if root]
+    homes = _candidate_user_homes()
     return [
-        Path.home(),
+        *homes,
         Path.home() / "orca",
         Path.home() / "opt",
         Path.home() / "Library",
+        *[home / "orca" for home in homes],
+        *[home / "opt" for home in homes],
         Path("/opt"),
         Path("/usr/local"),
         Path("/usr/local/bin"),
@@ -887,15 +949,109 @@ def _method_label(method: str | None) -> str | None:
 
 
 def _resolve_executable_candidate(candidates: list[_DiscoveryCandidate]) -> _DiscoveryCandidate | None:
+    executable_candidates: list[_DiscoveryCandidate] = []
     for candidate in candidates:
         if candidate.path.exists() and candidate.path.is_file() and os.access(candidate.path, os.X_OK):
-            return _DiscoveryCandidate(candidate.path.resolve(), candidate.method)
-    return None
+            executable_candidates.append(_DiscoveryCandidate(candidate.path.resolve(), candidate.method))
+    if not executable_candidates:
+        return None
+    if _looks_like_orca_selection(executable_candidates):
+        return max(executable_candidates, key=_score_orca_candidate)
+    return executable_candidates[0]
 
 
 def _is_orca_executable(executable_names: list[str]) -> bool:
     normalized = {name.lower() for name in executable_names}
     return any(name in {"orca", "orca.exe", "orca.bat", "orca.cmd"} for name in normalized)
+
+
+def _looks_like_orca_selection(candidates: list[_DiscoveryCandidate]) -> bool:
+    names = {candidate.path.name.lower() for candidate in candidates}
+    return bool(names & {"orca", "orca.exe", "orca.bat", "orca.cmd"})
+
+
+def _score_orca_candidate(candidate: _DiscoveryCandidate) -> int:
+    cache_key = str(candidate.path)
+    cached = _ORCA_SCORE_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    score = 0
+    resolved = candidate.path
+    resolved_text = str(resolved).lower()
+    roots = _candidate_roots_from_executable(resolved)
+    sibling_names = {
+        sibling_name
+        for sibling_name in _executable_names("orca_plot")
+        + _executable_names("orca_2json")
+        + _executable_names("orca_2mkl")
+        + _executable_names("orca_mapspc")
+    }
+    sibling_hits = 0
+    for root in roots:
+        for sibling_name in sibling_names:
+            if (root / sibling_name).exists() or (root / "bin" / sibling_name).exists():
+                sibling_hits += 1
+    score += sibling_hits * 20
+    if re.search(r"orca[_-]?\d", resolved_text):
+        score += 50
+    elif any("orca" in root.name.lower() for root in roots):
+        score += 20
+    if resolved.parent.name.lower() == "bin":
+        score += 5
+    if resolved_text.startswith("/usr/bin/orca") and sibling_hits == 0:
+        score -= 40
+    _ORCA_SCORE_CACHE[cache_key] = score
+    return score
+
+
+def _candidate_user_homes() -> list[Path]:
+    homes: list[Path] = [Path.home()]
+    if os.name == "nt":
+        return _dedupe_paths(homes)
+    for env_name in ("SUDO_USER", "LOGNAME", "USER"):
+        user_name = os.environ.get(env_name, "").strip()
+        if not user_name:
+            continue
+        try:
+            if pwd is not None:
+                homes.append(Path(pwd.getpwnam(user_name).pw_dir))
+            else:
+                homes.append(Path("/home") / user_name)
+        except Exception:
+            homes.append(Path("/home") / user_name)
+    sudo_user = os.environ.get("SUDO_USER", "").strip()
+    if sudo_user:
+        try:
+            if pwd is not None:
+                homes.append(Path(pwd.getpwnam(sudo_user).pw_dir))
+            else:
+                homes.append(Path("/home") / sudo_user)
+        except Exception:
+            homes.append(Path("/home") / sudo_user)
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        for base_dir in (Path("/home"), Path("/Users")):
+            if not base_dir.exists() or not base_dir.is_dir():
+                continue
+            try:
+                for child in base_dir.iterdir():
+                    if child.is_dir():
+                        homes.append(child)
+            except OSError:
+                continue
+    return _dedupe_paths(homes)
+
+
+def _dedupe_paths(paths: list[Path]) -> list[Path]:
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(path)
+    return deduped
 
 
 def _shell_fallback_candidates(

@@ -316,6 +316,96 @@ class OrcaRuntimeTests(unittest.TestCase):
             self.assertEqual(resolution.path, str(orca_plot.resolve()))
             self.assertIn(resolution.resolved_via, {"common_dir_scan", "orca_anchor_sibling"})
 
+    def test_sudo_user_home_install_beats_system_orca_anchor(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_root_home = Path(temp_dir) / "root_home"
+            fake_user_home = Path(temp_dir) / "home" / "wls"
+            system_dir = Path(temp_dir) / "system" / "bin"
+            fake_root_home.mkdir(parents=True)
+            fake_user_home.mkdir(parents=True)
+            system_dir.mkdir(parents=True)
+
+            system_orca = system_dir / _tool_file_name("orca")
+            user_install = fake_user_home / "orca_6_1_0"
+            user_install.mkdir()
+            user_orca = user_install / _tool_file_name("orca")
+            user_orca_plot = user_install / _tool_file_name("orca_plot")
+            _write_executable(system_orca)
+            _write_executable(user_orca)
+            _write_executable(user_orca_plot)
+
+            def fake_which(name: str) -> str | None:
+                if name in {"orca", "orca.exe", "orca.bat", "orca.cmd"}:
+                    return str(system_orca)
+                return None
+
+            fake_pwd_entry = mock.Mock(pw_dir=str(fake_user_home))
+            with mock.patch.dict("os.environ", {"ORCA_HOME": "", "PATH": "", "SUDO_USER": "wls"}, clear=False), mock.patch(
+                "orca_viz.orca_runtime.shutil.which",
+                side_effect=fake_which,
+            ), mock.patch(
+                "orca_viz.orca_runtime._load_login_shell_orca_env",
+                return_value={},
+            ), mock.patch(
+                "orca_viz.orca_runtime._shell_lookup_candidates",
+                return_value=[],
+            ), mock.patch(
+                "orca_viz.orca_runtime.Path.home",
+                return_value=fake_root_home,
+            ), mock.patch(
+                "orca_viz.orca_runtime.pwd.getpwnam",
+                return_value=fake_pwd_entry,
+            ):
+                resolution = resolve_orca_tool_details("orca_plot")
+
+            self.assertEqual(resolution.path, str(user_orca_plot.resolve()))
+            self.assertEqual(resolution.resolved_via, "orca_anchor_sibling")
+
+    def test_sudo_user_home_install_beats_system_orca_for_orca_binary_itself(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_root_home = Path(temp_dir) / "root_home"
+            fake_user_home = Path(temp_dir) / "home" / "wls"
+            system_dir = Path(temp_dir) / "system" / "bin"
+            fake_root_home.mkdir(parents=True)
+            fake_user_home.mkdir(parents=True)
+            system_dir.mkdir(parents=True)
+
+            system_orca = system_dir / _tool_file_name("orca")
+            user_install = fake_user_home / "orca_6_1_0"
+            user_install.mkdir()
+            user_orca = user_install / _tool_file_name("orca")
+            user_orca_plot = user_install / _tool_file_name("orca_plot")
+            _write_executable(system_orca)
+            _write_executable(user_orca)
+            _write_executable(user_orca_plot)
+
+            def fake_which(name: str) -> str | None:
+                if name in {"orca", "orca.exe", "orca.bat", "orca.cmd"}:
+                    return str(system_orca)
+                return None
+
+            fake_pwd_entry = mock.Mock(pw_dir=str(fake_user_home))
+            with mock.patch.dict("os.environ", {"ORCA_HOME": "", "PATH": "", "SUDO_USER": "wls"}, clear=False), mock.patch(
+                "orca_viz.orca_runtime.shutil.which",
+                side_effect=fake_which,
+            ), mock.patch(
+                "orca_viz.orca_runtime._load_login_shell_orca_env",
+                return_value={},
+            ), mock.patch(
+                "orca_viz.orca_runtime._shell_lookup_candidates",
+                return_value=[],
+            ), mock.patch(
+                "orca_viz.orca_runtime.Path.home",
+                return_value=fake_root_home,
+            ), mock.patch(
+                "orca_viz.orca_runtime.pwd.getpwnam",
+                return_value=fake_pwd_entry,
+            ):
+                resolution = resolve_orca_tool_details("orca")
+
+            self.assertEqual(resolution.path, str(user_orca.resolve()))
+            self.assertIn(resolution.resolved_via, {"common_dir_scan", "process_path_scan", "interactive_shell_path_scan", "login_shell_path_scan"})
+
     def test_path_hint_takes_priority_and_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             hinted_dir = Path(temp_dir) / "hinted"

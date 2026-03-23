@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented here.
 
+## [1.0.4] - 2026-03-23
+
+### Fixed
+
+- Improved local ORCA candidate selection so unrelated or weak `orca` matches are no longer preferred over fuller ORCA installs with sibling helper tools
+- Added explicit support for `sudo` desktop / CLI sessions by scanning the original `SUDO_USER` home directory for ORCA installs
+- Strengthened the `orca`-anchored sibling lookup so helper tools such as `orca_plot` are resolved from the real ORCA install tree even when a system-level `/usr/bin/orca` also exists
+
+### Validation
+
+- Re-ran `python -m unittest tests.test_orca_runtime`
+- Re-ran `python -m unittest discover -s tests`
+- Re-ran `python -m compileall -q app.py orca_viz tests`
+
 ## [1.0.3] - 2026-03-23
 
 ### Fixed
